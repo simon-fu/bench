@@ -1,13 +1,16 @@
 // refer https://github.com/haraldh/rust_echo_bench
 
 use std::env;
+use std::fmt::Debug;
 use std::io::Cursor;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use std::collections::VecDeque;
 
+use clap::IntoApp;
 use tokio::io::Result;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
@@ -18,6 +21,8 @@ use tokio::time;
 use tokio::time::Instant;
 
 use bytes::{Buf, BytesMut};
+
+use tracing::error;
 
 //pub type Error = Box<dyn std::error::Error + Send + Sync>;
 // pub type Result<T> = std::result::Result<T, Error>;
@@ -32,22 +37,54 @@ fn timestamp1() -> i64 {
     ms
 }
 
-fn print_usage(_: &str, opts: &getopts::Options) {
-    print!("{}", opts.usage(&""));
-}
 
 
-#[derive(Debug)]
-struct Config{
-    length: usize, duration: u64, number: u32, address: String, speed:u32
+// #[derive(Debug)]
+// struct Config0{
+//     length: usize, duration: u64, number: u32, address: String, speed:u32
+// }
+// impl Default for Config0 {
+//     fn default() -> Config0 {
+//         Config0 {
+//             length: 0, duration: 0, number: 0, address: String::from(""), speed:0
+//         }
+//     }
+// }
+
+use clap::{Clap};
+// refer https://github.com/clap-rs/clap/tree/master/clap_derive/examples
+#[derive(Clap, Debug)]
+#[clap(name="tcp-bench", author, about, version)]
+struct Config1{
+    #[clap(short='l', long, default_value = "0", long_about="Message length. If 0, skip send/recv message.")]
+    length: usize, 
+
+    #[clap(short='t', long, default_value = "60", long_about="Duration in seconds")]
+    duration: u64, 
+
+    #[clap(short='c', long, default_value = "50", long_about="Connection number")]
+    number: u32, 
+
+    #[clap(short='a', long, default_value = "127.0.0.1:7000", long_about="Target server address.")]
+    address: String, 
+
+    #[clap(short='s', long, default_value = "100", long_about="Setup connection speed")]
+    speed:u32
 }
-impl Default for Config {
-    fn default() -> Config {
-        Config {
+
+impl Default for Config1 {
+    fn default() -> Config1 {
+        Config1 {
             length: 0, duration: 0, number: 0, address: String::from(""), speed:0
         }
     }
 }
+
+use Config1 as Config;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
+
 
 #[derive(Debug)]
 struct Count {
@@ -213,7 +250,7 @@ impl  State {
             }
 
             Event::Xfer { ts, count } => {
-                // /println!("got xfer {:?}", *count);
+                //trace!("got xfer {:?}", *count);
                 self.xfer.inb += count.inb;
                 self.xfer.outb += count.outb;
                 if self.last_xfer_ts < *ts {
@@ -234,11 +271,11 @@ impl  State {
         if !self.finished {
             if Instant::now()>=self.deadline{
                 self.print_progress();
-                println!("reach duration {} sec", self.config.duration);
+                info!("reach duration {} sec", self.config.duration);
                 self.finished = true;
             } else if self.is_sessison_finished() {
                 self.print_progress();
-                println!("all sessions finished ");
+                info!("all sessions finished ");
                 self.finished = true;
             }
 
@@ -263,24 +300,24 @@ impl  State {
         if average > self.max_conn_speed {
             self.max_conn_speed = average;
         }
-        println!("Connections: ok {}, fail {}, broken {}, total {}, average {} c/s, max {} c/s", 
+        info!("Connections: ok {}, fail {}, broken {}, total {}, average {} c/s, max {} c/s", 
             self.conn_ok_count, self.conn_fail_count, self.conn_broken_count, self.config.number, average, self.max_conn_speed
         );
     }
 
     fn print_final(self: &Self){
-        println!("");
-        println!("");
+        info!("");
+        info!("");
         
-        println!("Sessions: finished {}, total {}", self.finish_session_count, self.config.number);
+        info!("Sessions: finished {}, total {}", self.finish_session_count, self.config.number);
         let duration = self.last_xfer_ts - self.start_time;
-        println!("Connections: success {}, fail {}, broken {}, total {}, max {} c/s", 
+        info!("Connections: success {}, fail {}, broken {}, total {}, max {} c/s", 
             self.conn_ok_count, self.conn_fail_count, self.conn_broken_count, self.config.number, self.max_conn_speed
         );
 
-        println!( "Requests : total {},  average {} q/s", self.xfer.outb, 
+        info!( "Requests : total {},  average {} q/s", self.xfer.outb, 
             if duration > 0 {1000*self.xfer.outb as i64 / duration} else {0});
-        println!( "Responses: total {},  average {} q/s", self.xfer.inb, 
+        info!( "Responses: total {},  average {} q/s", self.xfer.inb, 
             if duration > 0 {1000*self.xfer.inb as i64 / duration} else {0});
     }
 }
@@ -315,7 +352,7 @@ async fn check_event(
         }
 
         Some(ev) = rx.recv() => {
-            //println!("GOT = {:?}", ev);
+            //trace!("GOT = {:?}", ev);
             if state.process_ev(&ev) {
                 return true;
                 //break;
@@ -420,7 +457,7 @@ async fn session_connect(session : &mut Session) -> Result<()>{
             return Ok(());
         }
         Err(e) => {
-            println!("connect fail with [{}]", e);
+            error!("connect fail with [{}]", e);
             let _ = session.tx0.send(Event::ConnectFail { ts: timestamp1() }).await;
             return Err(e);
         } 
@@ -468,7 +505,7 @@ async fn session_entry(mut session : Session, mut watch_rx0 : watch::Receiver<Hu
             while matches!(watch_state, HubEvent::KickXfer) {
                 tokio::select! {
                     Err(e) = &mut action => { 
-                        println!("xfering but broken with error [{}]", e);
+                        error!("xfering but broken with error [{}]", e);
                         is_broken = true;
                         
                         break;
@@ -495,7 +532,7 @@ async fn session_entry(mut session : Session, mut watch_rx0 : watch::Receiver<Hu
 
 async fn bench(cfg : Arc<Config>){
 
-    println!("spawn {} task...", cfg.number);
+    info!("spawn {} task...", cfg.number);
     
     let (tx, mut rx) = mpsc::channel(1024);
     let (watch_tx, watch_rx) = watch::channel(HubEvent::Ready);
@@ -539,7 +576,7 @@ async fn bench(cfg : Arc<Config>){
     }
     drop(tx);
     drop(watch_rx);
-    println!("spawn {} task done", cfg.number);
+    info!("spawn {} task done", cfg.number);
 
     if cfg.length > 0 {
         let _ = watch_tx.send(HubEvent::KickXfer);
@@ -554,7 +591,7 @@ async fn bench(cfg : Arc<Config>){
         let _ = watch_tx.send(HubEvent::ExitReq);
         tokio::select! {
             _ = time::sleep_until(dead_time) => {
-                println!("waiting for task timeout");
+                error!("waiting for task timeout");
                 break;
             }
     
@@ -573,31 +610,74 @@ async fn bench(cfg : Arc<Config>){
     drop(rx);
 }
 
-async fn func1() -> i32 { 12 }
 
-async fn func2() -> i32{
-    let t = 1;                  
-    let v = t + 1; 
-    let b = func1().await;
-    let rv = &v;   
-    *rv + b
+
+
+
+
+
+
+pub fn init_tracing_subscriber() {
+    // use tracing::trace;
+    // use tracing::debug;
+    // use tracing::info;
+    // use tracing::{span, Level, event, instrument};
+    // use tracing_subscriber;
+    use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::fmt::time::FormatTime;
+
+    pub struct UptimeMilli {
+        epoch: Instant,
+    }
+    
+    impl Default for UptimeMilli {
+        fn default() -> Self {
+            UptimeMilli {
+                epoch: Instant::now(),
+            }
+        }
+    }
+    
+    impl FormatTime for UptimeMilli {
+        fn format_time(&self, w: &mut dyn std::fmt::Write) -> std::fmt::Result {
+            let e = self.epoch.elapsed();
+            write!(w, "{:03}.{:03}", e.as_secs(), e.subsec_millis())
+        }
+    }
+
+    tracing_subscriber::fmt()
+        // .pretty()
+        // .with_thread_names(true)
+        // .with_thread_ids(true)
+        // .without_time()
+        //.with_max_level(tracing::Level::TRACE)
+
+        // see https://tracing.rs/tracing_subscriber/fmt/time/index.html
+        // .with_timer(time::ChronoLocal::default())
+        //.with_timer(time::ChronoUtc::default())
+        //.with_timer(time::SystemTime::default())
+        //.with_timer(time::Uptime::default())
+        .with_timer(UptimeMilli::default())
+
+        // target is arg0 ?
+        .with_target(false)
+
+        // RUST_LOG environment variable
+        // from https://docs.rs/tracing-subscriber/0.2.0-alpha.2/tracing_subscriber/fmt/index.html
+        // from https://docs.rs/env_logger/0.8.3/env_logger/
+        .with_env_filter(EnvFilter::from_default_env())
+
+        // sets this to be the default, global collector for this application.
+        .init();
 }
 
-async fn func3() -> i32{
-    let t = 1;                  
-    let v = t + 1; 
-    let rv = &v;   
-    let b = func1().await;
-    *rv + b
+
+
+fn print_usage(_: &str, opts: &getopts::Options) {
+    print!("{}", opts.usage(&""));
 }
 
-#[tokio::main]
-pub async fn main() {
-    let fut2 = func2();
-    let fut3 = func3();
-    println!("fut2 size: {}", std::mem::size_of_val(&fut2));
-    println!("fut3 size: {}", std::mem::size_of_val(&fut3));
-
+fn parse_args_getopts() -> Option<Config> {
     let args: Vec<_> = env::args().collect();
     let program = args[0].clone();
 
@@ -637,15 +717,15 @@ pub async fn main() {
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(f) => {
-            eprintln!("{}", f.to_string());
+            error!("{}", f.to_string());
             print_usage(&program, &opts);
-            return;
+            return None;
         }
     };
 
     if matches.opt_present("h") {
         print_usage(&program, &opts);
-        return;
+        return None;
     }
 
     
@@ -673,14 +753,40 @@ pub async fn main() {
         .unwrap_or_default()
         .parse::<u32>()
         .unwrap_or(100);
+    return Some(cfg);
+}
 
 
-    println!("Benchmarking: {}", cfg.address);
-    println!(
+#[tokio::main]
+pub async fn main() {
+    init_tracing_subscriber();
+
+    let cfg = Config::parse();
+
+    {
+        let addr = cfg.address.parse::<SocketAddr>();
+        if addr.is_err() {            
+            error!("invalid address [{}]\n", cfg.address);
+            Config::into_app().print_help().unwrap();
+            return;
+        }
+    }
+
+    
+    
+    // let parsed_result = parse_args_getopts();
+    // if parsed_result.is_none(){
+    //     return;
+    // }
+    // let cfg = parsed_result.unwrap();
+
+    //info!("cfg={:?}", cfg);
+    info!("Benchmarking: {}", cfg.address);
+    info!(
         "{} clients, {} c/s, running {} bytes, {} sec.",
         cfg.number, cfg.speed, cfg.length,  cfg.duration
     );
-    println!();
+    info!("");
 
     bench(Arc::new(cfg)).await;
 }
