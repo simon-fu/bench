@@ -6,7 +6,7 @@ edition = "2018"
 
 [[bin]]
 name = "tcp-bench"
-path = "src/tcp-bench.rs"
+path = "src/main-tcp-bench.rs"
 test = false
 bench = false
 

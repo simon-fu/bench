@@ -41,7 +41,7 @@ fn timestamp1() -> i64 {
 
 // refer https://github.com/clap-rs/clap/tree/master/clap_derive/examples
 #[derive(Clap, Debug)]
-#[clap(name="tcp-bench", author, about, version)]
+#[clap(name="tcp bench", author, about, version)]
 struct Config{
     #[clap(short='l', long, default_value = "0", long_about="Message length. If 0, skip send/recv message.")]
     length: usize, 
@@ -363,33 +363,66 @@ async fn session_watch(watch_rx0 : &mut watch::Receiver<HubEvent>, state : &mut 
 }
 
 async fn session_read<'a>(rd : &mut tokio::net::tcp::ReadHalf<'a>, in_buf:&mut BytesMut, capcity:usize, inb: &mut u64) -> Result<usize>{
-    loop{
-        if in_buf.len() == capcity {
-            unsafe {
-                in_buf.set_len(0);
-            }
-            *inb += 1;
-        }
-        rd.read_buf(in_buf).await?;
-    }
+    //info!("session reading...");
 
+    let result = rd.read_buf(in_buf).await;
+    match result {
+        Ok(_) => {
+            if in_buf.len() == capcity {
+                unsafe {
+                    in_buf.set_len(0);
+                }
+                *inb += 1;
+            }
+        },
+        Err(_) => {},
+    }
+    //info!("session reading done");
+    return result;
 }
 
 async fn session_write<'a>(wr : &mut tokio::net::tcp::WriteHalf<'a>, out_buf:&mut Cursor<Vec<u8>>, outb: &mut u64) -> Result<usize>{
-    loop{
-        if out_buf.remaining() == 0 {
-            out_buf.set_position(0);
-            *outb += 1;
-        }
-        wr.write_buf(out_buf).await?;
+    //info!("session writing...");
+
+    let result =  wr.write_buf(out_buf).await;
+    match result {
+        Ok(_) => {
+            if out_buf.remaining() == 0 {
+                out_buf.set_position(0);
+                *outb += 1;
+            }
+        },
+        Err(_) => {},
     }
+
+    //info!("session writing done");
+    return result;
+}
+
+async fn session_read_loop<'a>(rd : &mut tokio::net::tcp::ReadHalf<'a>, in_buf:&mut BytesMut, capcity:usize, inb: &mut u64) -> Result<usize>{
+    loop{
+        session_read(rd, in_buf, capcity, inb).await?;
+    }
+}
+
+async fn session_write_loop<'a>(wr : &mut tokio::net::tcp::WriteHalf<'a>, out_buf:&mut Cursor<Vec<u8>>, outb: &mut u64) -> Result<usize>{
+    loop{
+        session_write(wr, out_buf, outb).await?;
+    }
+}
+
+async fn session_read_until<'a>(rd : &mut tokio::net::tcp::ReadHalf<'a>, in_buf:&mut BytesMut, capcity:usize, inb: &mut u64, outb: &u64) -> Result<usize>{
+    while *inb < *outb{
+        session_read(rd, in_buf, capcity, inb).await?;
+    }
+    return Ok(0);
 }
 
 async fn session_xfer(session : &mut Session, count: &mut Count) -> Result<usize>{
     let (mut rd, mut wr) = session.state.stream.as_mut().unwrap().split();
 
-    let read_action = session_read(&mut rd, &mut session.state.in_buf, session.cfg0.length, &mut count.inb);
-    let write_action = session_write(&mut wr, &mut session.state.out_buf, &mut count.outb);
+    let read_action = session_read_loop(&mut rd, &mut session.state.in_buf, session.cfg0.length, &mut count.inb);
+    let write_action = session_write_loop(&mut wr, &mut session.state.out_buf, &mut count.outb);
 
     tokio::pin!(read_action);
     tokio::pin!(write_action);
@@ -451,21 +484,57 @@ async fn session_entry(mut session : Session, mut watch_rx0 : watch::Receiver<Hu
 
         // xfer bytes
         let mut is_broken = false;
-        {
-            let action = session_xfer(&mut session, &mut count);
-            tokio::pin!(action);
+        if matches!(watch_state, HubEvent::KickXfer) {
 
-            while matches!(watch_state, HubEvent::KickXfer) {
-                tokio::select! {
-                    Err(e) = &mut action => { 
-                        error!("xfering but broken with error [{}]", e);
-                        is_broken = true;
-                        
-                        break;
-                    }
+            {
+                // info!("session xfering...."); 
+
+                let action = session_xfer(&mut session, &mut count);
+                tokio::pin!(action);
     
-                    _ = session_watch(&mut watch_rx0, &mut watch_state) =>{ }
+                while matches!(watch_state, HubEvent::KickXfer) {
+                    tokio::select! {
+                        Err(e) = &mut action => { 
+                            error!("xfering but broken with error [{}]", e);
+                            is_broken = true;
+                            
+                            break;
+                        }
+        
+                        _ = session_watch(&mut watch_rx0, &mut watch_state) =>{ }
+                    }
                 }
+
+                // info!("session xfering done");
+            }
+
+            {
+                //info!("session reading remains {:?} ...", count);
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let (mut rd, mut _wr) = session.state.stream.as_mut().unwrap().split();
+                let read_action = session_read_until(&mut rd, &mut session.state.in_buf, session.cfg0.length, &mut count.inb, &count.outb);
+                tokio::pin!(read_action);
+
+                while !is_broken {
+                    tokio::select! {
+                        result = &mut read_action => { 
+                            match result{
+                                Ok(_) => { },
+                                Err(e) => {
+                                    error!("reading remains but broken with error [{}]", e);
+                                    is_broken = true;
+                                },
+                            }
+                            break;
+                        }
+        
+                        _ = time::sleep_until(deadline) => {
+                            error!("reading remains timeout");
+                            break;
+                        }
+                    }
+                }
+                //info!("session reading remains done");
             }
         }
 
@@ -554,14 +623,14 @@ async fn bench(cfg : Arc<Config>){
         info!("spawned {} task", state.spawn_session_count);
     }
 
-    if cfg.length > 0 && !is_finished {
+    if cfg.length > 0 && !is_finished && state.conn_ok_count > 0{
         info!("broadcast kick-xfer");
         let _ = watch_tx.send(HubEvent::KickXfer);
     }
 
-    if !is_finished {
-        info!("xfering, wait for {} sec", cfg.duration);
-        while !is_finished {
+    if !is_finished && !state.is_sessison_finished() && state.conn_ok_count > 0{
+        info!("waiting for {} sec", cfg.duration);
+        while !is_finished && !state.is_sessison_finished(){
             is_finished = state.check_event(& mut rx,  &mut next_print_time, &deadline, &dead_line_msg).await;
         }
     }
@@ -579,7 +648,6 @@ async fn bench(cfg : Arc<Config>){
             }
         }
     }
-
 
     state.print_final();
 
