@@ -1,6 +1,5 @@
 // refer https://github.com/haraldh/rust_echo_bench
 
-use std::env;
 use std::fmt::Debug;
 use std::io::Cursor;
 use std::net::SocketAddr;
@@ -20,9 +19,11 @@ use tokio::sync::watch;
 use tokio::time;
 use tokio::time::Instant;
 
-use bytes::{Buf, BytesMut};
-
+use tracing::info;
 use tracing::error;
+
+use bytes::{Buf, BytesMut};
+use clap::{Clap};
 
 //pub type Error = Box<dyn std::error::Error + Send + Sync>;
 // pub type Result<T> = std::result::Result<T, Error>;
@@ -38,24 +39,10 @@ fn timestamp1() -> i64 {
 }
 
 
-
-// #[derive(Debug)]
-// struct Config0{
-//     length: usize, duration: u64, number: u32, address: String, speed:u32
-// }
-// impl Default for Config0 {
-//     fn default() -> Config0 {
-//         Config0 {
-//             length: 0, duration: 0, number: 0, address: String::from(""), speed:0
-//         }
-//     }
-// }
-
-use clap::{Clap};
 // refer https://github.com/clap-rs/clap/tree/master/clap_derive/examples
 #[derive(Clap, Debug)]
 #[clap(name="tcp-bench", author, about, version)]
-struct Config1{
+struct Config{
     #[clap(short='l', long, default_value = "0", long_about="Message length. If 0, skip send/recv message.")]
     length: usize, 
 
@@ -71,19 +58,6 @@ struct Config1{
     #[clap(short='s', long, default_value = "100", long_about="Setup connection speed")]
     speed:u32
 }
-
-impl Default for Config1 {
-    fn default() -> Config1 {
-        Config1 {
-            length: 0, duration: 0, number: 0, address: String::from(""), speed:0
-        }
-    }
-}
-
-use Config1 as Config;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
 
 
 #[derive(Debug)]
@@ -199,53 +173,59 @@ impl Clone for HubEvent {
 impl Copy for HubEvent {}
 
 #[derive(Debug)]
-struct State{
+struct MasterState{
     config : Arc<Config> ,
     xfer : Count,
     last_xfer_ts : i64,
     conn_ok_count : u32,
     conn_fail_count : u32,
     conn_broken_count : u32,
+    spawn_session_count : u32,
     finish_session_count : u32,
     conn_speed_state : SpeedState,
     max_conn_speed : i64,
     start_time : i64,
-    deadline : Instant,
     finished : bool,
+    updated : bool,
 }
 
 
-impl  State {
-    fn new(cfg : &Arc<Config>) -> State {
+impl  MasterState {
+    fn new(cfg : &Arc<Config>) -> MasterState {
         let now = timestamp1();
-        State {
+        MasterState {
             config : cfg.clone(),
             xfer : Count::default(),
             last_xfer_ts : now,
             conn_ok_count : 0,
             conn_fail_count : 0,
             conn_broken_count : 0,
+            spawn_session_count : 0,
             finish_session_count : 0,
             conn_speed_state : SpeedState::default(),
             max_conn_speed : 0,
             start_time : now,
-            deadline : Instant::now() + Duration::from_secs(cfg.duration),
             finished : false,
+            updated : false,
         }
     }
 
     fn process_ev(self: &mut Self, ev : &Event) -> bool{
+        //trace!("process_ev {:?}", ev);
         match ev {
             Event::ConnectOk { ts } => {
+                self.updated = true;
                 self.conn_ok_count += 1;
                 self.conn_speed_state.add(*ts, 1);
             }
 
             Event::ConnectFail { .. } => {
+                self.updated = true;
                 self.conn_fail_count += 1;
             }
 
             Event::ConnectBroken { .. } => {
+                self.updated = true;
                 self.conn_broken_count += 1;
             }
 
@@ -260,41 +240,33 @@ impl  State {
 
             Event::Finish { .. } => {
                 self.finish_session_count +=1;
-                return self.check_finished();
+                if self.is_sessison_finished() {
+                    self.print_progress();
+                    info!("all sessions finished ");
+                    self.finished = true;
+                }
+                return self.finished;
             }
             
         };
         return false;
     }
 
-    fn check_finished(self: &mut Self) -> bool{
-        if !self.finished {
-            if Instant::now()>=self.deadline{
-                self.print_progress();
-                info!("reach duration {} sec", self.config.duration);
-                self.finished = true;
-            } else if self.is_sessison_finished() {
-                self.print_progress();
-                info!("all sessions finished ");
-                self.finished = true;
-            }
-
-            if self.finished{
-
-            }
-        }
-        return self.finished;
-    }
-
-    fn is_finished(self: &Self) -> bool{
-        return self.finished;
-    }
 
     fn is_sessison_finished(self: &Self) -> bool{
-        return self.finish_session_count >= self.config.number;
+        return self.finish_session_count >= self.spawn_session_count;
+    }
+
+    fn is_connecting_finished(self: &Self) -> bool {
+        return (self.conn_ok_count + self.conn_fail_count) >= self.spawn_session_count;
     }
 
     fn print_progress(self: &mut Self){
+        if !self.updated {
+            return;
+        }
+        self.updated = false;
+
         self.conn_speed_state.cap(2000);
         let average = self.conn_speed_state.average();
         if average > self.max_conn_speed {
@@ -309,7 +281,7 @@ impl  State {
         info!("");
         info!("");
         
-        info!("Sessions: finished {}, total {}", self.finish_session_count, self.config.number);
+        info!("Sessions: finished {}, spawn {}, total {}", self.finish_session_count, self.spawn_session_count, self.config.number);
         let duration = self.last_xfer_ts - self.start_time;
         info!("Connections: success {}, fail {}, broken {}, total {}, max {} c/s", 
             self.conn_ok_count, self.conn_fail_count, self.conn_broken_count, self.config.number, self.max_conn_speed
@@ -320,56 +292,37 @@ impl  State {
         info!( "Responses: total {},  average {} q/s", self.xfer.inb, 
             if duration > 0 {1000*self.xfer.inb as i64 / duration} else {0});
     }
-}
 
-
-
-
-async fn check_event(
-    _cfg : &Arc<Config>, 
-    rx: & mut mpsc::Receiver<Event>,  
-    state: & mut State, 
-    next_print_time : & mut Instant) -> bool{
-
-    if state.is_finished(){
-        return true;
-    }
-
-    tokio::select! {
-        _ = time::sleep_until(*next_print_time) => {
-            state.print_progress();
-            *next_print_time = Instant::now() + Duration::from_millis(1000);
-        }
-
-        _ = time::sleep_until(state.deadline) => {
-            if !state.is_finished() {
-                if state.check_finished(){
-
-                }
+    async fn check_event(
+        self: &mut Self, 
+        rx: & mut mpsc::Receiver<Event>,  
+        next_print_time : & mut Instant,
+        dead_line : & Instant,
+        dead_line_msg : &str,
+        ) -> bool{
+    
+        tokio::select! {
+            _ = time::sleep_until(*next_print_time) => {
+                self.print_progress();
+                *next_print_time = Instant::now() + Duration::from_millis(1000);
             }
-            return state.is_finished();
-            //break;
-        }
-
-        Some(ev) = rx.recv() => {
-            //trace!("GOT = {:?}", ev);
-            if state.process_ev(&ev) {
+    
+            _ = time::sleep_until(*dead_line) => {
+                info!("{}", dead_line_msg);
                 return true;
-                //break;
             }
-        }
-
-        else => {
-            //break;
-        }
-    };
-    return false;
+    
+            Some(ev) = rx.recv() => {
+                let _ = self.process_ev(&ev); 
+            }
+    
+            else => {
+                return true; // something wrong
+            }
+        };
+        return false; 
+    }
 }
-
-
-
-
-
 
 
 struct SessionState{
@@ -532,78 +485,101 @@ async fn session_entry(mut session : Session, mut watch_rx0 : watch::Receiver<Hu
 
 async fn bench(cfg : Arc<Config>){
 
-    info!("spawn {} task...", cfg.number);
+    info!("try spawn {} task...", cfg.number);
     
     let (tx, mut rx) = mpsc::channel(1024);
     let (watch_tx, watch_rx) = watch::channel(HubEvent::Ready);
 
     let kick_time = timestamp1();
-    let mut state = State::new(&cfg);
-    // let deadline = Instant::now() + Duration::from_secs(cfg.duration);
+    let mut state = MasterState::new(&cfg);
+    
     let mut next_print_time = Instant::now() + Duration::from_millis(1000);
+    let deadline = Instant::now() + Duration::from_secs(cfg.duration);
+    let dead_line_msg = format!("reach duration {} sec", state.config.duration);
+
+    let mut is_finished = false;
 
     for n in 0..cfg.number {
         let session = Session::new(&cfg, &tx);
         let watch_rx0 = watch_rx.clone();
+        state.spawn_session_count += 1;
+
         tokio::spawn(async move{
             session_entry(session, watch_rx0).await;
         });
 
-        loop {
-            let elapsed = timestamp1() - kick_time;
-            let expect = 1000 * n / cfg.speed;
-            let diff = expect as i64 - elapsed;
-            if diff <= 0{
-                break;
-            }
-            
-            let action = check_event(&cfg, & mut rx, & mut state, &mut next_print_time);
-            tokio::select! {
-                _ = time::sleep(Duration::from_millis(diff as u64)) => {
+        {
+            let master_action = state.check_event(& mut rx,  &mut next_print_time, &deadline, &dead_line_msg);
+            tokio::pin!(master_action);
+    
+            loop {
+                let elapsed = timestamp1() - kick_time;
+                let expect = 1000 * n / cfg.speed;
+                let diff = expect as i64 - elapsed;
+                if diff <= 0{
                     break;
                 }
-                done = action =>{
-                    if done {
+                
+                tokio::select! {
+                    _ = time::sleep(Duration::from_millis(diff as u64)) => {
                         break;
                     }
-                }
-            };
+                    true = &mut master_action =>{
+                        is_finished = true;
+                        break;
+                    }
+                };
+            }
         }
-        if state.is_finished(){
+
+        if is_finished{
             break;
         }
 
     }
     drop(tx);
     drop(watch_rx);
-    info!("spawn {} task done", cfg.number);
 
-    if cfg.length > 0 {
+    {
+        let deadline0 = Instant::now() + Duration::from_secs(10);
+        let dead_line_msg0 = "waiting for connection-result timeout";
+        while !state.is_connecting_finished() {
+            let done = state.check_event(& mut rx,  &mut next_print_time, &deadline0, &dead_line_msg0).await;
+            if done {
+                is_finished = true;
+                break;
+            }
+        }
+        state.print_progress();
+        info!("spawned {} task", state.spawn_session_count);
+    }
+
+    if cfg.length > 0 && !is_finished {
+        info!("broadcast kick-xfer");
         let _ = watch_tx.send(HubEvent::KickXfer);
     }
 
-    while !state.is_finished() {
-        check_event(&cfg, & mut rx, & mut state, &mut next_print_time).await;
+    if !is_finished {
+        info!("xfering, wait for {} sec", cfg.duration);
+        while !is_finished {
+            is_finished = state.check_event(& mut rx,  &mut next_print_time, &deadline, &dead_line_msg).await;
+        }
     }
 
-    let dead_time = Instant::now() + Duration::from_secs(10);
-    while !state.is_sessison_finished(){
+    if !state.is_sessison_finished() {
+        info!("broadcast exit-request");
         let _ = watch_tx.send(HubEvent::ExitReq);
-        tokio::select! {
-            _ = time::sleep_until(dead_time) => {
-                error!("waiting for task timeout");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let dead_line_msg = "waiting for task timeout";
+        while !state.is_sessison_finished(){
+            let done = state.check_event(& mut rx,  &mut next_print_time, &deadline, &dead_line_msg).await;
+            if done {
                 break;
             }
-    
-            Some(ev) = rx.recv() => {
-                state.process_ev(&ev);
-            }
-    
-            else => {
-                break;
-            }
-        };
+        }
     }
+
 
     state.print_final();
 
@@ -612,17 +588,7 @@ async fn bench(cfg : Arc<Config>){
 
 
 
-
-
-
-
-
 pub fn init_tracing_subscriber() {
-    // use tracing::trace;
-    // use tracing::debug;
-    // use tracing::info;
-    // use tracing::{span, Level, event, instrument};
-    // use tracing_subscriber;
     use tracing_subscriber::EnvFilter;
     use tracing_subscriber::fmt::time::FormatTime;
 
@@ -671,92 +637,6 @@ pub fn init_tracing_subscriber() {
         .init();
 }
 
-
-
-fn print_usage(_: &str, opts: &getopts::Options) {
-    print!("{}", opts.usage(&""));
-}
-
-fn parse_args_getopts() -> Option<Config> {
-    let args: Vec<_> = env::args().collect();
-    let program = args[0].clone();
-
-    let mut opts = getopts::Options::new();
-    opts.optflag("h", "help", "Print this help.");
-    opts.optopt(
-        "a",
-        "address",
-        "Target echo server address. Default: 127.0.0.1:7000",
-        "<address>",
-    );
-    opts.optopt(
-        "l",
-        "length",
-        "Test message length. Default: 512",
-        "<length>",
-    );
-    opts.optopt(
-        "t",
-        "duration",
-        "Test duration in seconds. Default: 60",
-        "<duration>",
-    );
-    opts.optopt(
-        "c",
-        "number",
-        "Test connection number. Default: 50",
-        "<number>",
-    );
-    opts.optopt(
-        "s",
-        "speed",
-        "setup connection speed. Default: 100",
-        "<speed>",
-    );
-
-    let matches = match opts.parse(&args[1..]) {
-        Ok(m) => m,
-        Err(f) => {
-            error!("{}", f.to_string());
-            print_usage(&program, &opts);
-            return None;
-        }
-    };
-
-    if matches.opt_present("h") {
-        print_usage(&program, &opts);
-        return None;
-    }
-
-    
-    let mut cfg = Config::default();
-    cfg.length = matches
-        .opt_str("length")
-        .unwrap_or_default()
-        .parse::<usize>()
-        .unwrap_or(512);
-    cfg.duration = matches
-        .opt_str("duration")
-        .unwrap_or_default()
-        .parse::<u64>()
-        .unwrap_or(60);
-    cfg.number = matches
-        .opt_str("number")
-        .unwrap_or_default()
-        .parse::<u32>()
-        .unwrap_or(50);
-    cfg.address = matches
-        .opt_str("address")
-        .unwrap_or_else(|| "127.0.0.1:7000".to_string());
-    cfg.speed = matches
-        .opt_str("speed")
-        .unwrap_or_default()
-        .parse::<u32>()
-        .unwrap_or(100);
-    return Some(cfg);
-}
-
-
 #[tokio::main]
 pub async fn main() {
     init_tracing_subscriber();
@@ -772,14 +652,6 @@ pub async fn main() {
         }
     }
 
-    
-    
-    // let parsed_result = parse_args_getopts();
-    // if parsed_result.is_none(){
-    //     return;
-    // }
-    // let cfg = parsed_result.unwrap();
-
     //info!("cfg={:?}", cfg);
     info!("Benchmarking: {}", cfg.address);
     info!(
@@ -791,149 +663,3 @@ pub async fn main() {
     bench(Arc::new(cfg)).await;
 }
 
-// struct Count {
-//     inb: u64,
-//     outb: u64,
-// }
-
-// fn main0() {
-//     let args: Vec<_> = env::args().collect();
-//     let program = args[0].clone();
-
-//     let mut opts = getopts::Options::new();
-//     opts.optflag("h", "help", "Print this help.");
-//     opts.optopt(
-//         "a",
-//         "address",
-//         "Target echo server address. Default: 127.0.0.1:12345",
-//         "<address>",
-//     );
-//     opts.optopt(
-//         "l",
-//         "length",
-//         "Test message length. Default: 512",
-//         "<length>",
-//     );
-//     opts.optopt(
-//         "t",
-//         "duration",
-//         "Test duration in seconds. Default: 60",
-//         "<duration>",
-//     );
-//     opts.optopt(
-//         "c",
-//         "number",
-//         "Test connection number. Default: 50",
-//         "<number>",
-//     );
-
-//     let matches = match opts.parse(&args[1..]) {
-//         Ok(m) => m,
-//         Err(f) => {
-//             eprintln!("{}", f.to_string());
-//             print_usage(&program, &opts);
-//             return;
-//         }
-//     };
-
-//     if matches.opt_present("h") {
-//         print_usage(&program, &opts);
-//         return;
-//     }
-
-//     let length = matches
-//         .opt_str("length")
-//         .unwrap_or_default()
-//         .parse::<usize>()
-//         .unwrap_or(512);
-//     let duration = matches
-//         .opt_str("duration")
-//         .unwrap_or_default()
-//         .parse::<u64>()
-//         .unwrap_or(60);
-//     let number = matches
-//         .opt_str("number")
-//         .unwrap_or_default()
-//         .parse::<u32>()
-//         .unwrap_or(50);
-//     let address = matches
-//         .opt_str("address")
-//         .unwrap_or_else(|| "127.0.0.1:12345".to_string());
-
-//     let (tx, rx) = mpsc::channel();
-
-//     let stop = Arc::new(AtomicBool::new(false));
-//     let control = Arc::downgrade(&stop);
-
-//     for _ in 0..number {
-//         let tx = tx.clone();
-//         let address = address.clone();
-//         let stop = stop.clone();
-//         let length = length;
-
-//         thread::spawn(move || {
-//             let mut sum = Count { inb: 0, outb: 0 };
-//             let mut out_buf: Vec<u8> = vec![0; length];
-//             out_buf[length - 1] = b'\n';
-//             let mut in_buf: Vec<u8> = vec![0; length];
-//             let mut stream = TcpStream::connect(&*address).unwrap();
-
-//             loop {
-//                 if (*stop).load(Ordering::Relaxed) {
-//                     break;
-//                 }
-
-//                 match stream.write_all(&out_buf) {
-//                     Err(_) => {
-//                         println!("Write error!");
-//                         break;
-//                     }
-//                     Ok(_) => sum.outb += 1,
-//                 }
-
-//                 if (*stop).load(Ordering::Relaxed) {
-//                     break;
-//                 }
-
-//                 match stream.read(&mut in_buf) {
-//                     Err(_) => break,
-//                     Ok(m) => {
-//                         if m == 0 || m != length {
-//                             println!("Read error! length={}", m);
-//                             break;
-//                         }
-//                     }
-//                 };
-//                 sum.inb += 1;
-//             }
-//             tx.send(sum).unwrap();
-//         });
-//     }
-
-//     thread::sleep(Duration::from_secs(duration));
-
-//     match control.upgrade() {
-//         Some(stop) => (*stop).store(true, Ordering::Relaxed),
-//         None => println!("Sorry, but all threads died already."),
-//     }
-
-//     let mut sum = Count { inb: 0, outb: 0 };
-//     for _ in 0..number {
-//         let c: Count = rx.recv().unwrap();
-//         sum.inb += c.inb;
-//         sum.outb += c.outb;
-//     }
-//     println!("Benchmarking: {}", address);
-//     println!(
-//         "{} clients, running {} bytes, {} sec.",
-//         number, length, duration
-//     );
-//     println!();
-//     println!(
-//         "Speed: {} request/sec, {} response/sec",
-//         sum.outb / duration,
-//         sum.inb / duration
-//     );
-//     println!("Requests: {}", sum.outb);
-//     println!("Responses: {}", sum.inb);
-// }
