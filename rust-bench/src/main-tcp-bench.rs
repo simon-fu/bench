@@ -85,7 +85,7 @@ impl Clone for HubEvent {
 
 impl Copy for HubEvent {}
 
-const MASTER_CHECK_INTERVAL: u64 = 200;
+const MASTER_CHECK_INTERVAL: u64 = 1000;
 
 #[derive(Debug)]
 struct MasterState{
@@ -104,6 +104,7 @@ struct MasterState{
     xfer: Transfer,
     start_xfer_ts: i64,
     last_xfer_ts : i64,
+    last_print_xfer : i64,
     xfer_updated : bool,
 }
 
@@ -128,6 +129,7 @@ impl  MasterState {
             xfer : Transfer::default(),
             start_xfer_ts : now_ms,
             last_xfer_ts : now_ms,
+            last_print_xfer : now_ms,
             xfer_updated : false,
         }
     }
@@ -158,6 +160,10 @@ impl  MasterState {
  
                 if self.last_xfer_ts < *ts {
                     self.last_xfer_ts = *ts;
+                }
+
+                if (xrs::time::now_millis() - self.last_print_xfer) >= MASTER_CHECK_INTERVAL as i64 {
+                    self.check_print_xfer();
                 }
             }
 
@@ -196,6 +202,14 @@ impl  MasterState {
             );
     }
 
+    fn check_print_xfer(self: &mut Self){
+        if self.xfer_updated {
+            self.xfer_updated = false;
+            self.print_xfer_progress();
+            self.last_print_xfer = xrs::time::now_millis();
+        }
+    }
+
     fn print_conn_progress(self: &mut Self){
         let average = self.conn_speed_state.cap_average(2000, xrs::time::now_millis());
         if average > self.max_conn_speed {
@@ -213,10 +227,7 @@ impl  MasterState {
             self.print_conn_progress();
         }
 
-        if self.xfer_updated {
-            self.xfer_updated = false;
-            self.print_xfer_progress();
-        }
+        self.check_print_xfer();
     }
 
     fn print_final(self: &Self){
