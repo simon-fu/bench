@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{self, Instant};
 use tokio::{io::{self, AsyncWriteExt, Interest}};
-use tracing::{error, info};
+use tracing::{error, info, debug};
 use std::{error::Error, time::Duration};
 use clap::{Clap};
 
@@ -101,7 +101,7 @@ async fn session_entry(mut socket : TcpStream){
                     match result {
                         Ok(_) => {},
                         Err(e) => {
-                            error!("failed to write data to socket, error=[{}]", e);
+                            debug!("failed to write data to socket, error=[{}]", e);
                             return;
                         },
                     }
@@ -111,7 +111,7 @@ async fn session_entry(mut socket : TcpStream){
                     continue;
                 }
                 Err(e) => {
-                    error!("failed to read data from socket, error=[{}]", e);
+                    debug!("failed to read data from socket, error=[{}]", e);
                     return;
                 }
             }
