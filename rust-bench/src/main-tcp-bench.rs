@@ -1,15 +1,14 @@
 // refer https://github.com/haraldh/rust_echo_bench
 
+mod xrs;
+use xrs::speed::Speed;
+
 use std::fmt::Debug;
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
-use std::collections::VecDeque;
 
-use clap::IntoApp;
 use tokio::io::Result;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
@@ -20,23 +19,13 @@ use tokio::time;
 use tokio::time::Instant;
 
 use tracing::info;
+use tracing::debug;
 use tracing::error;
 
 use bytes::{Buf, BytesMut};
 use clap::{Clap};
+use clap::IntoApp;
 
-//pub type Error = Box<dyn std::error::Error + Send + Sync>;
-// pub type Result<T> = std::result::Result<T, Error>;
-
-// from https://www.jianshu.com/p/e30eef29f66e
-fn timestamp1() -> i64 {
-    let start = SystemTime::now();
-    let since_the_epoch = start
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards");
-    let ms = since_the_epoch.as_secs() as i64 * 1000i64 + (since_the_epoch.subsec_nanos() as f64 / 1_000_000.0) as i64;
-    ms
-}
 
 
 // refer https://github.com/clap-rs/clap/tree/master/clap_derive/examples
@@ -77,66 +66,7 @@ impl Default for Count {
 
 
 #[derive(Debug)]
-struct TsI64{
-    ts : i64,
-    num : i64,
-}
-
-#[derive(Debug)]
-struct SpeedState{
-    history : VecDeque<TsI64>, // ts, num
-    sum : i64,
-}
-
-impl SpeedState{
-    fn add(self: &mut Self, ts : i64, num : i64){
-        self.history.push_back(TsI64{ts, num});
-        self.sum += num;
-    }
-
-    fn cap(self : &mut Self, duration : i64){
-        while !self.history.is_empty() {
-            let d = self.history.back().unwrap().ts - self.history.front().unwrap().ts;
-            if d > duration {
-                self.sum -= self.history.front().unwrap().num;
-                self.history.pop_front();
-            } else {
-                break;
-            }
-        }
-
-        if !self.history.is_empty() {
-            let &ts1 = &self.history.back().unwrap().ts;
-            let &ts2 = &self.history.front().unwrap().ts;
-            if ts1 == ts2 && ts1 > duration {
-                self.history.push_front(TsI64{ts:ts1-duration, num:0});
-            }
-        }
-
-    }
-
-    fn average(self : &mut Self) -> i64{
-        if self.history.is_empty() {
-            0
-        } else {
-            let d = self.history.back().unwrap().ts - self.history.front().unwrap().ts;
-            if d > 0 {1000 * (self.sum as i64) / d}
-            else {0}
-        }
-    }
-}
-
-impl Default for SpeedState {
-    fn default() -> SpeedState {
-        SpeedState {
-            sum : 0,
-            history : VecDeque::new()
-        }
-    }
-}
-
-#[derive(Debug)]
-enum Event {
+enum SessionEvent {
     ConnectOk {
         ts: i64,
     },
@@ -182,7 +112,7 @@ struct MasterState{
     conn_broken_count : u32,
     spawn_session_count : u32,
     finish_session_count : u32,
-    conn_speed_state : SpeedState,
+    conn_speed_state : Speed,
     max_conn_speed : i64,
     start_time : i64,
     finished : bool,
@@ -192,44 +122,44 @@ struct MasterState{
 
 impl  MasterState {
     fn new(cfg : &Arc<Config>) -> MasterState {
-        let now = timestamp1();
+        let now_ms = xrs::time::now_millis();
         MasterState {
             config : cfg.clone(),
             xfer : Count::default(),
-            last_xfer_ts : now,
+            last_xfer_ts : now_ms,
             conn_ok_count : 0,
             conn_fail_count : 0,
             conn_broken_count : 0,
             spawn_session_count : 0,
             finish_session_count : 0,
-            conn_speed_state : SpeedState::default(),
+            conn_speed_state : Speed::default(),
             max_conn_speed : 0,
-            start_time : now,
+            start_time : now_ms,
             finished : false,
             updated : false,
         }
     }
 
-    fn process_ev(self: &mut Self, ev : &Event) -> bool{
+    fn process_ev(self: &mut Self, ev : &SessionEvent) -> bool{
         //trace!("process_ev {:?}", ev);
         match ev {
-            Event::ConnectOk { ts } => {
+            SessionEvent::ConnectOk { ts } => {
                 self.updated = true;
                 self.conn_ok_count += 1;
                 self.conn_speed_state.add(*ts, 1);
             }
 
-            Event::ConnectFail { .. } => {
+            SessionEvent::ConnectFail { .. } => {
                 self.updated = true;
                 self.conn_fail_count += 1;
             }
 
-            Event::ConnectBroken { .. } => {
+            SessionEvent::ConnectBroken { .. } => {
                 self.updated = true;
                 self.conn_broken_count += 1;
             }
 
-            Event::Xfer { ts, count } => {
+            SessionEvent::Xfer { ts, count } => {
                 //trace!("got xfer {:?}", *count);
                 self.xfer.inb += count.inb;
                 self.xfer.outb += count.outb;
@@ -238,7 +168,7 @@ impl  MasterState {
                 }
             }
 
-            Event::Finish { .. } => {
+            SessionEvent::Finish { .. } => {
                 self.finish_session_count +=1;
                 if self.is_sessison_finished() {
                     self.print_progress();
@@ -267,8 +197,7 @@ impl  MasterState {
         }
         self.updated = false;
 
-        self.conn_speed_state.cap(2000);
-        let average = self.conn_speed_state.average();
+        let average = self.conn_speed_state.cap_average(2000, xrs::time::now_millis());
         if average > self.max_conn_speed {
             self.max_conn_speed = average;
         }
@@ -281,12 +210,13 @@ impl  MasterState {
         info!("");
         info!("");
         
-        info!("Sessions: finished {}, spawn {}, total {}", self.finish_session_count, self.spawn_session_count, self.config.number);
-        let duration = self.last_xfer_ts - self.start_time;
-        info!("Connections: success {}, fail {}, broken {}, total {}, max {} c/s", 
-            self.conn_ok_count, self.conn_fail_count, self.conn_broken_count, self.config.number, self.max_conn_speed
+        info!("Tasks      : spawn {}, finished {}, total {}", self.spawn_session_count, self.finish_session_count, self.config.number);
+        
+        info!("Connections: ok {}, fail {}, broken {}, max {} c/s", 
+            self.conn_ok_count, self.conn_fail_count, self.conn_broken_count, self.max_conn_speed
         );
 
+        let duration = self.last_xfer_ts - self.start_time;
         info!( "Requests : total {},  average {} q/s", self.xfer.outb, 
             if duration > 0 {1000*self.xfer.outb as i64 / duration} else {0});
         info!( "Responses: total {},  average {} q/s", self.xfer.inb, 
@@ -295,7 +225,7 @@ impl  MasterState {
 
     async fn check_event(
         self: &mut Self, 
-        rx: & mut mpsc::Receiver<Event>,  
+        rx: & mut mpsc::Receiver<SessionEvent>,  
         next_print_time : & mut Instant,
         dead_line : & Instant,
         dead_line_msg : &str,
@@ -333,12 +263,12 @@ struct SessionState{
 
 struct Session{
     cfg0 : Arc<Config>,
-    tx0 : mpsc::Sender<Event>, 
+    tx0 : mpsc::Sender<SessionEvent>, 
     state : SessionState,
 }
 
 impl Session {
-    fn new(cfg : &Arc<Config>, tx : &mpsc::Sender<Event>) -> Session { 
+    fn new(cfg : &Arc<Config>, tx : &mpsc::Sender<SessionEvent>) -> Session { 
         Session{
             cfg0: cfg.clone(),
             tx0: tx.clone(),
@@ -439,12 +369,12 @@ async fn session_connect(session : &mut Session) -> Result<()>{
     match conn_result {
         Ok(s)=>{
             session.state.stream = Some(s);
-            let _ = session.tx0.send(Event::ConnectOk { ts: timestamp1() }).await;
+            let _ = session.tx0.send(SessionEvent::ConnectOk { ts: xrs::time::now_millis() }).await;
             return Ok(());
         }
         Err(e) => {
-            error!("connect fail with [{}]", e);
-            let _ = session.tx0.send(Event::ConnectFail { ts: timestamp1() }).await;
+            debug!("connect fail with [{}]", e);
+            let _ = session.tx0.send(SessionEvent::ConnectFail { ts: xrs::time::now_millis() }).await;
             return Err(e);
         } 
     }
@@ -539,16 +469,16 @@ async fn session_entry(mut session : Session, mut watch_rx0 : watch::Receiver<Hu
         }
 
         if is_broken {
-            let _ = session.tx0.send(Event::ConnectBroken { ts: timestamp1() }).await;
+            let _ = session.tx0.send(SessionEvent::ConnectBroken { ts: xrs::time::now_millis() }).await;
         }
 
-        let _ = session.tx0.send(Event::Xfer { ts: timestamp1(), count }).await;
+        let _ = session.tx0.send(SessionEvent::Xfer { ts: xrs::time::now_millis(), count }).await;
 
         break;
     }
 
     // finally 
-    let _ = session.tx0.send(Event::Finish { ts: timestamp1()}).await;
+    let _ = session.tx0.send(SessionEvent::Finish { ts: xrs::time::now_millis()}).await;
 }
 
 
@@ -558,8 +488,6 @@ async fn bench(cfg : Arc<Config>){
     
     let (tx, mut rx) = mpsc::channel(1024);
     let (watch_tx, watch_rx) = watch::channel(HubEvent::Ready);
-
-    let kick_time = timestamp1();
     let mut state = MasterState::new(&cfg);
     
     let mut next_print_time = Instant::now() + Duration::from_millis(1000);
@@ -567,7 +495,8 @@ async fn bench(cfg : Arc<Config>){
     let dead_line_msg = format!("reach duration {} sec", state.config.duration);
 
     let mut is_finished = false;
-
+    let kick_time = Instant::now();
+    
     for n in 0..cfg.number {
         let session = Session::new(&cfg, &tx);
         let watch_rx0 = watch_rx.clone();
@@ -582,9 +511,8 @@ async fn bench(cfg : Arc<Config>){
             tokio::pin!(master_action);
     
             loop {
-                let elapsed = timestamp1() - kick_time;
                 let expect = 1000 * n / cfg.speed;
-                let diff = expect as i64 - elapsed;
+                let diff = expect as i64 - kick_time.elapsed().as_millis() as i64;
                 if diff <= 0{
                     break;
                 }
@@ -604,8 +532,8 @@ async fn bench(cfg : Arc<Config>){
         if is_finished{
             break;
         }
-
     }
+    
     drop(tx);
     drop(watch_rx);
 
@@ -656,58 +584,10 @@ async fn bench(cfg : Arc<Config>){
 
 
 
-pub fn init_tracing_subscriber() {
-    use tracing_subscriber::EnvFilter;
-    use tracing_subscriber::fmt::time::FormatTime;
-
-    pub struct UptimeMilli {
-        epoch: Instant,
-    }
-    
-    impl Default for UptimeMilli {
-        fn default() -> Self {
-            UptimeMilli {
-                epoch: Instant::now(),
-            }
-        }
-    }
-    
-    impl FormatTime for UptimeMilli {
-        fn format_time(&self, w: &mut dyn std::fmt::Write) -> std::fmt::Result {
-            let e = self.epoch.elapsed();
-            write!(w, "{:03}.{:03}", e.as_secs(), e.subsec_millis())
-        }
-    }
-
-    tracing_subscriber::fmt()
-        // .pretty()
-        // .with_thread_names(true)
-        // .with_thread_ids(true)
-        // .without_time()
-        //.with_max_level(tracing::Level::TRACE)
-
-        // see https://tracing.rs/tracing_subscriber/fmt/time/index.html
-        // .with_timer(time::ChronoLocal::default())
-        //.with_timer(time::ChronoUtc::default())
-        //.with_timer(time::SystemTime::default())
-        //.with_timer(time::Uptime::default())
-        .with_timer(UptimeMilli::default())
-
-        // target is arg0 ?
-        .with_target(false)
-
-        // RUST_LOG environment variable
-        // from https://docs.rs/tracing-subscriber/0.2.0-alpha.2/tracing_subscriber/fmt/index.html
-        // from https://docs.rs/env_logger/0.8.3/env_logger/
-        .with_env_filter(EnvFilter::from_default_env())
-
-        // sets this to be the default, global collector for this application.
-        .init();
-}
 
 #[tokio::main]
 pub async fn main() {
-    init_tracing_subscriber();
+    xrs::tracing_subscriber::init_simple_milli();
 
     let cfg = Config::parse();
 
@@ -720,7 +600,7 @@ pub async fn main() {
         }
     }
 
-    //info!("cfg={:?}", cfg);
+    debug!("cfg={:?}", cfg);
     info!("Benchmarking: {}", cfg.address);
     info!(
         "{} clients, {} c/s, running {} bytes, {} sec.",

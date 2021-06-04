@@ -10,6 +10,12 @@ path = "src/main-tcp-bench.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "tcp-echo-server"
+path = "src/main-tcp-echo-server.rs"
+test = false
+bench = false
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
