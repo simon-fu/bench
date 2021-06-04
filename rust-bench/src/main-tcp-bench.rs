@@ -50,9 +50,17 @@ struct Config{
 
 
 #[derive(Debug)]
+#[derive(Copy, Clone)]
 struct Count {
     inb: u64,
     outb: u64,
+}
+
+impl Count {
+    fn clear(& mut self) {
+        self.inb = 0;
+        self.outb = 0;
+    }
 }
 
 impl Default for Count {
@@ -60,6 +68,29 @@ impl Default for Count {
         Count {
             inb: 0,
             outb: 0,
+        }
+    }
+}
+
+#[derive(Debug)]
+#[derive(Copy, Clone)]
+struct XferCount {
+    packets: Count,
+    bytes: Count,
+}
+
+impl XferCount {
+    fn clear(& mut self) {
+        self.packets.clear();
+        self.bytes.clear();
+    }
+}
+
+impl Default for XferCount {
+    fn default() -> XferCount {
+        XferCount {
+            packets: Count::default(),
+            bytes: Count::default(),
         }
     }
 }
@@ -78,7 +109,7 @@ enum SessionEvent {
     },
     Xfer{
         ts: i64,
-        count: Count,
+        data: XferCount,
     },
     Finish{
         ts: i64,
@@ -105,7 +136,7 @@ impl Copy for HubEvent {}
 #[derive(Debug)]
 struct MasterState{
     config : Arc<Config> ,
-    xfer : Count,
+    xfer: XferCount,
     last_xfer_ts : i64,
     conn_ok_count : u32,
     conn_fail_count : u32,
@@ -116,7 +147,10 @@ struct MasterState{
     max_conn_speed : i64,
     start_time : i64,
     finished : bool,
-    updated : bool,
+    conn_updated : bool,
+
+    //xfer_speed : Speed,
+    xfer_updated : bool,
 }
 
 
@@ -125,7 +159,7 @@ impl  MasterState {
         let now_ms = xrs::time::now_millis();
         MasterState {
             config : cfg.clone(),
-            xfer : Count::default(),
+            xfer : XferCount::default(),
             last_xfer_ts : now_ms,
             conn_ok_count : 0,
             conn_fail_count : 0,
@@ -136,7 +170,10 @@ impl  MasterState {
             max_conn_speed : 0,
             start_time : now_ms,
             finished : false,
-            updated : false,
+            conn_updated : false,
+
+            //xfer_speed : Speed::default(),
+            xfer_updated : false,
         }
     }
 
@@ -144,25 +181,28 @@ impl  MasterState {
         //trace!("process_ev {:?}", ev);
         match ev {
             SessionEvent::ConnectOk { ts } => {
-                self.updated = true;
+                self.conn_updated = true;
                 self.conn_ok_count += 1;
                 self.conn_speed_state.add(*ts, 1);
             }
 
             SessionEvent::ConnectFail { .. } => {
-                self.updated = true;
+                self.conn_updated = true;
                 self.conn_fail_count += 1;
             }
 
             SessionEvent::ConnectBroken { .. } => {
-                self.updated = true;
+                self.conn_updated = true;
                 self.conn_broken_count += 1;
             }
 
-            SessionEvent::Xfer { ts, count } => {
+            SessionEvent::Xfer { ts, data } => {
                 //trace!("got xfer {:?}", *count);
-                self.xfer.inb += count.inb;
-                self.xfer.outb += count.outb;
+                self.xfer_updated = true;
+                self.xfer.packets.inb += data.packets.inb;
+                self.xfer.packets.outb += data.packets.outb;
+                self.xfer.bytes.inb += data.bytes.inb;
+                self.xfer.bytes.outb += data.bytes.outb;
                 if self.last_xfer_ts < *ts {
                     self.last_xfer_ts = *ts;
                 }
@@ -191,12 +231,19 @@ impl  MasterState {
         return (self.conn_ok_count + self.conn_fail_count) >= self.spawn_session_count;
     }
 
-    fn print_progress(self: &mut Self){
-        if !self.updated {
-            return;
-        }
-        self.updated = false;
+    fn print_xfer_progress(self: &Self){
+        let duration = self.last_xfer_ts - self.start_time;
+        info!( "Transfer: requests {} ({} q/s, {} KB/s), response {} ({} q/s, {} KB/s)", 
+            self.xfer.packets.outb, 
+            if duration > 0 {1000*self.xfer.packets.outb as i64 / duration} else {0},
+            if duration > 0 {1000*self.xfer.bytes.outb as i64 / duration / 1000} else {0},
+            self.xfer.packets.inb, 
+            if duration > 0 {1000*self.xfer.packets.inb as i64 / duration} else {0},
+            if duration > 0 {1000*self.xfer.bytes.inb as i64 / duration / 1000} else {0},
+            );
+    }
 
+    fn print_conn_progress(self: &mut Self){
         let average = self.conn_speed_state.cap_average(2000, xrs::time::now_millis());
         if average > self.max_conn_speed {
             self.max_conn_speed = average;
@@ -204,6 +251,19 @@ impl  MasterState {
         info!("Connections: ok {}, fail {}, broken {}, total {}, average {} c/s, max {} c/s", 
             self.conn_ok_count, self.conn_fail_count, self.conn_broken_count, self.config.number, average, self.max_conn_speed
         );
+    }
+
+    fn print_progress(self: &mut Self){
+        
+        if self.conn_updated {
+            self.conn_updated = false;
+            self.print_conn_progress();
+        }
+
+        if self.xfer_updated {
+            self.xfer_updated = false;
+            self.print_xfer_progress();
+        }
     }
 
     fn print_final(self: &Self){
@@ -216,11 +276,12 @@ impl  MasterState {
             self.conn_ok_count, self.conn_fail_count, self.conn_broken_count, self.max_conn_speed
         );
 
-        let duration = self.last_xfer_ts - self.start_time;
-        info!( "Requests : total {},  average {} q/s", self.xfer.outb, 
-            if duration > 0 {1000*self.xfer.outb as i64 / duration} else {0});
-        info!( "Responses: total {},  average {} q/s", self.xfer.inb, 
-            if duration > 0 {1000*self.xfer.inb as i64 / duration} else {0});
+        self.print_xfer_progress();
+        // let duration = self.last_xfer_ts - self.start_time;
+        // info!( "Requests : total {},  average {} q/s", self.xfer.packets.outb, 
+        //     if duration > 0 {1000*self.xfer.packets.outb as i64 / duration} else {0});
+        // info!( "Responses: total {},  average {} q/s", self.xfer.packets.inb, 
+        //     if duration > 0 {1000*self.xfer.packets.inb as i64 / duration} else {0});
     }
 
     async fn check_event(
@@ -292,7 +353,7 @@ async fn session_watch(watch_rx0 : &mut watch::Receiver<HubEvent>, state : &mut 
     }
 }
 
-async fn session_read<'a>(rd : &mut tokio::net::tcp::ReadHalf<'a>, in_buf:&mut BytesMut, capcity:usize, inb: &mut u64) -> Result<usize>{
+async fn session_read<'a>(rd : &mut tokio::net::tcp::ReadHalf<'a>, in_buf:&mut BytesMut, capcity:usize, npackets: &mut u64, nbytes: &mut u64) -> Result<usize>{
     //info!("session reading...");
 
     let result = rd.read_buf(in_buf).await;
@@ -302,7 +363,8 @@ async fn session_read<'a>(rd : &mut tokio::net::tcp::ReadHalf<'a>, in_buf:&mut B
                 unsafe {
                     in_buf.set_len(0);
                 }
-                *inb += 1;
+                *npackets += 1;
+                *nbytes += capcity as u64;
             }
         },
         Err(_) => {},
@@ -311,7 +373,7 @@ async fn session_read<'a>(rd : &mut tokio::net::tcp::ReadHalf<'a>, in_buf:&mut B
     return result;
 }
 
-async fn session_write<'a>(wr : &mut tokio::net::tcp::WriteHalf<'a>, out_buf:&mut Cursor<Vec<u8>>, outb: &mut u64) -> Result<usize>{
+async fn session_write<'a>(wr : &mut tokio::net::tcp::WriteHalf<'a>, out_buf:&mut Cursor<Vec<u8>>, npackets: &mut u64, nbytes: &mut u64) -> Result<usize>{
     //info!("session writing...");
 
     let result =  wr.write_buf(out_buf).await;
@@ -319,7 +381,8 @@ async fn session_write<'a>(wr : &mut tokio::net::tcp::WriteHalf<'a>, out_buf:&mu
         Ok(_) => {
             if out_buf.remaining() == 0 {
                 out_buf.set_position(0);
-                *outb += 1;
+                *npackets += 1;
+                *nbytes += out_buf.remaining() as u64;
             }
         },
         Err(_) => {},
@@ -329,38 +392,38 @@ async fn session_write<'a>(wr : &mut tokio::net::tcp::WriteHalf<'a>, out_buf:&mu
     return result;
 }
 
-async fn session_read_loop<'a>(rd : &mut tokio::net::tcp::ReadHalf<'a>, in_buf:&mut BytesMut, capcity:usize, inb: &mut u64) -> Result<usize>{
-    loop{
-        session_read(rd, in_buf, capcity, inb).await?;
-    }
-}
+// async fn session_read_loop<'a>(rd : &mut tokio::net::tcp::ReadHalf<'a>, in_buf:&mut BytesMut, capcity:usize, inb: &mut u64) -> Result<usize>{
+//     loop{
+//         session_read(rd, in_buf, capcity, inb).await?;
+//     }
+// }
 
-async fn session_write_loop<'a>(wr : &mut tokio::net::tcp::WriteHalf<'a>, out_buf:&mut Cursor<Vec<u8>>, outb: &mut u64) -> Result<usize>{
-    loop{
-        session_write(wr, out_buf, outb).await?;
-    }
-}
+// async fn session_write_loop<'a>(wr : &mut tokio::net::tcp::WriteHalf<'a>, out_buf:&mut Cursor<Vec<u8>>, outb: &mut u64) -> Result<usize>{
+//     loop{
+//         session_write(wr, out_buf, outb).await?;
+//     }
+// }
 
-async fn session_read_until<'a>(rd : &mut tokio::net::tcp::ReadHalf<'a>, in_buf:&mut BytesMut, capcity:usize, inb: &mut u64, outb: &u64) -> Result<usize>{
-    while *inb < *outb{
-        session_read(rd, in_buf, capcity, inb).await?;
+async fn session_read_until<'a>(rd : &mut tokio::net::tcp::ReadHalf<'a>, in_buf:&mut BytesMut, capcity:usize, xfer:&mut XferCount) -> Result<usize>{
+    while xfer.packets.inb < xfer.packets.outb{
+        session_read(rd, in_buf, capcity, &mut xfer.packets.inb, &mut xfer.bytes.inb).await?;
     }
     return Ok(0);
 }
 
-async fn session_xfer(session : &mut Session, count: &mut Count) -> Result<usize>{
+async fn session_xfer(session : &mut Session, xfer: &mut XferCount) -> Result<usize>{
     let (mut rd, mut wr) = session.state.stream.as_mut().unwrap().split();
 
-    let read_action = session_read_loop(&mut rd, &mut session.state.in_buf, session.cfg0.length, &mut count.inb);
-    let write_action = session_write_loop(&mut wr, &mut session.state.out_buf, &mut count.outb);
+    // let read_action = session_read(&mut rd, &mut session.state.in_buf, session.cfg0.length, &mut xfer.packets.inb, &mut xfer.bytes.inb);
+    // let write_action = session_write(&mut wr, &mut session.state.out_buf, &mut xfer.packets.outb, &mut xfer.bytes.outb);
 
-    tokio::pin!(read_action);
-    tokio::pin!(write_action);
+    // tokio::pin!(read_action);
+    // tokio::pin!(write_action);
 
     return tokio::select! {
-        Err(e) = &mut write_action => { Err(e) }
+        r = session_read(&mut rd, &mut session.state.in_buf, session.cfg0.length, &mut xfer.packets.inb, &mut xfer.bytes.inb) => { r }
 
-        Err(e) = &mut read_action => { Err(e) }
+        r = session_write(&mut wr, &mut session.state.out_buf, &mut xfer.packets.outb, &mut xfer.bytes.outb) => { r }
     };
 }
 
@@ -383,10 +446,10 @@ async fn session_connect(session : &mut Session) -> Result<()>{
 
 async fn session_entry(mut session : Session, mut watch_rx0 : watch::Receiver<HubEvent>){
     let mut watch_state = *watch_rx0.borrow();
-    let mut count = Count::default();
+    let mut xfer = XferCount::default();
 
     loop {
-        // conncting
+        // connecting
         {
             let action = session_connect(&mut session);
             tokio::pin!(action);
@@ -419,18 +482,28 @@ async fn session_entry(mut session : Session, mut watch_rx0 : watch::Receiver<Hu
             {
                 // info!("session xfering...."); 
 
-                let action = session_xfer(&mut session, &mut count);
-                tokio::pin!(action);
-    
+                //let action = session_xfer(&mut session, &mut count);
+                //tokio::pin!(action);
+                let mut next_time = Instant::now() + Duration::from_millis(1000);
+
                 while matches!(watch_state, HubEvent::KickXfer) {
                     tokio::select! {
-                        Err(e) = &mut action => { 
-                            error!("xfering but broken with error [{}]", e);
-                            is_broken = true;
-                            
-                            break;
+                        r = session_xfer(&mut session, &mut xfer) => { 
+                            match r {
+                                Ok(_) => {},
+                                Err(e) => {
+                                    error!("xfering but broken with error [{}]", e);
+                                    is_broken = true;
+                                    break;
+                                },
+                            }
                         }
         
+                        _ = time::sleep_until(next_time) => {
+                            next_time = Instant::now() + Duration::from_millis(1000);
+                            let _ = session.tx0.send(SessionEvent::Xfer { ts: xrs::time::now_millis(), data:xfer}).await;
+                            xfer.clear();
+                        }
                         _ = session_watch(&mut watch_rx0, &mut watch_state) =>{ }
                     }
                 }
@@ -442,7 +515,7 @@ async fn session_entry(mut session : Session, mut watch_rx0 : watch::Receiver<Hu
                 //info!("session reading remains {:?} ...", count);
                 let deadline = Instant::now() + Duration::from_secs(5);
                 let (mut rd, mut _wr) = session.state.stream.as_mut().unwrap().split();
-                let read_action = session_read_until(&mut rd, &mut session.state.in_buf, session.cfg0.length, &mut count.inb, &count.outb);
+                let read_action = session_read_until(&mut rd, &mut session.state.in_buf, session.cfg0.length, &mut xfer);
                 tokio::pin!(read_action);
 
                 while !is_broken {
@@ -472,7 +545,7 @@ async fn session_entry(mut session : Session, mut watch_rx0 : watch::Receiver<Hu
             let _ = session.tx0.send(SessionEvent::ConnectBroken { ts: xrs::time::now_millis() }).await;
         }
 
-        let _ = session.tx0.send(SessionEvent::Xfer { ts: xrs::time::now_millis(), count }).await;
+        let _ = session.tx0.send(SessionEvent::Xfer { ts: xrs::time::now_millis(), data:xfer }).await;
 
         break;
     }
