@@ -23,12 +23,13 @@ struct Config{
 }
 
 enum SessionEvent {
-    Finished,
+    Finished { input_bytes:u32},
 }
 
 
 struct Server{
     session_count : u32,
+    input_bytes : u64,
     conn_speed : Speed,
     updated : bool,
 
@@ -38,6 +39,7 @@ struct Server{
 impl Server{
     fn clear(self: &mut Self){
         self.session_count = 0;
+        self.input_bytes = 0;
         self.updated = false;
         self.conn_speed.clear();
         self.max_conn_speed = 0;
@@ -64,6 +66,7 @@ impl Server{
         );
 
         if self.session_count == 0 {
+            info!("input bytes {}", self.input_bytes);
             info!("no session exist, clear up");
             info!("");
             self.clear();
@@ -73,8 +76,9 @@ impl Server{
     fn process_ev(self: &mut Self, ev : &SessionEvent) {
         //trace!("process_ev {:?}", ev);
         match ev {
-            SessionEvent::Finished { .. } => {
+            SessionEvent::Finished { input_bytes } => {
                 self.session_count -= 1;
+                self.input_bytes += *input_bytes as u64;
                 self.updated = true;
             }
         };
@@ -82,7 +86,7 @@ impl Server{
     
 }
 
-async fn session_entry(mut socket : TcpStream){
+async fn session_entry(mut socket : TcpStream, input_bytes:&mut u32){
     loop {
         let ready = socket.ready(Interest::READABLE).await.expect("fail to check socket ready state");
 
@@ -96,6 +100,7 @@ async fn session_entry(mut socket : TcpStream){
                         // gracefully closed
                         return;
                     }
+                    *input_bytes += n as u32;
     
                     let result = socket.write_all(&buf[0..n]).await;
                     match result {
@@ -130,7 +135,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(&cfg.address).await?;
     info!("Listening on: {}", cfg.address);
 
-    let mut serv = Server{ session_count: (0), conn_speed: Speed::default(), updated: (false), max_conn_speed: (0) };
+    let mut serv = Server{ session_count: (0), conn_speed: Speed::default(), updated: (false), max_conn_speed: (0), input_bytes: (0) };
     let (tx, mut rx) = mpsc::channel(1024);
     let mut next_print_time = Instant::now() + Duration::from_millis(1000);
 
@@ -143,8 +148,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let tx0 = tx.clone();
                         serv.add_session();
                         tokio::spawn(async move {
-                            session_entry(socket).await;
-                            let _=tx0.send(SessionEvent::Finished).await;
+                            let mut input_bytes:u32 = 0;
+                            session_entry(socket, &mut input_bytes).await;
+                            let _=tx0.send(SessionEvent::Finished { input_bytes }).await;
                         });
                     },
                     Err(_) => {}, 

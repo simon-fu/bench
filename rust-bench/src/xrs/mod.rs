@@ -159,3 +159,95 @@ pub mod speed{
     }
     
 }
+
+
+pub mod traffic{
+
+    #[derive(Debug)]
+    #[derive(Copy, Clone)]
+    pub struct Traffic {
+        pub packets: u64,
+        pub bytes: u64,
+    }
+    
+    
+    impl Traffic {
+        pub fn clear(& mut self) {
+            self.packets = 0;
+            self.bytes = 0;
+        }
+    
+        pub fn add(& mut self, pkt:u64, bytes:u64) {
+            self.packets += pkt;
+            self.bytes += bytes;
+        }
+    }
+    
+    impl Default for Traffic {
+        fn default() -> Traffic {
+            Traffic {
+                packets: 0,
+                bytes: 0,
+            }
+        }
+    }
+    
+    impl std::ops::Add for Traffic {
+        type Output = Traffic;
+        fn add(self, other: Traffic) -> Traffic {
+            Traffic {
+                packets: self.packets+other.packets, 
+                bytes: self.bytes+other.bytes
+            }
+        }
+    }
+    
+    impl std::ops::AddAssign for Traffic {
+        fn add_assign(&mut self, other: Traffic)  {
+            self.packets += other.packets;
+            self.bytes += other.bytes;
+        }
+    }
+    
+    
+    #[derive(Debug)]
+    #[derive(Copy, Clone)]
+    pub struct Transfer {
+        pub output: Traffic,
+        pub input: Traffic,
+    }
+    
+    impl Transfer {
+        pub fn clear(& mut self) {
+            self.output.clear();
+            self.input.clear();
+        }
+    }
+    
+    impl Default for Transfer {
+        fn default() -> Transfer {
+            Transfer {
+                output: Traffic::default(),
+                input: Traffic::default(),
+            }
+        }
+    }
+    
+    impl std::ops::Add for Transfer {
+        type Output = Transfer;
+        fn add(self, other: Transfer) -> Transfer {
+            Transfer {
+                output: self.output+other.output, 
+                input: self.input+other.input
+            }
+        }
+    }
+    
+    impl std::ops::AddAssign for Transfer {
+        fn add_assign(&mut self, other: Transfer)  {
+            self.output += other.output;
+            self.input += other.input;
+        }
+    }
+    
+}
