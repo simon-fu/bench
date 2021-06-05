@@ -126,6 +126,8 @@ async fn session_entry(mut socket : TcpStream, input_bytes:&mut u32){
 }
 
 
+
+//#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
 

@@ -350,13 +350,13 @@ async fn session_read_remains(session : &mut Session, batch_xfer : &mut Transfer
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let (mut rd, _) = session.state.stream.as_mut().unwrap().split();
-    while session.input_pacekts < session.output_packets{
+    //debug!("before reading remains, output {}, input {}, remains {}", 
+    //    session.output_packets, session.input_pacekts, session.output_packets-session.input_pacekts);
+    while (session.input_pacekts + batch_xfer.input.packets) < session.output_packets{
         tokio::select! {
             r = session_read(&mut rd, &mut session.state.in_buf, session.cfg0.length, &mut batch_xfer.input) => { 
                 match r {
-                    Ok(_) => {
-                        session.input_pacekts += 1;
-                    },
+                    Ok(_) => {},
                     Err(e) => {
                         error!("reading remains but broken with error [{}]", e);
                         return Err(e);
@@ -370,20 +370,21 @@ async fn session_read_remains(session : &mut Session, batch_xfer : &mut Transfer
             }
         } // select
     }
+    session.input_pacekts += batch_xfer.input.packets;
+    //debug!("after reading remains, output {}, input {}, remains {}", 
+    //    session.output_packets, session.input_pacekts, session.output_packets-session.input_pacekts);
     return Ok(());
 }
 
-async fn session_xfer(session : &mut Session, watch_rx0 : &mut watch::Receiver<HubEvent>, watch_state:&mut HubEvent) -> Result<()>{
-    
+async fn session_xfer(session : &mut Session, watch_rx0 : &mut watch::Receiver<HubEvent>, watch_state:&mut HubEvent) -> Result<()>{    
     let mut batch_xfer = Transfer::default();
-
 
     let (mut rd, mut wr) = session.state.stream.as_mut().unwrap().split();
     let mut next_time = Instant::now() + Duration::from_millis(1000);
     let mut result:Result<()> = Ok(());
 
     while matches!(watch_state, HubEvent::KickXfer) 
-        && (session.output_packets+batch_xfer.output.packets) < session.cfg0.packets  // TODO
+        && (session.output_packets+batch_xfer.output.packets) < session.cfg0.packets  
     { 
         tokio::select! {
 
@@ -426,7 +427,7 @@ async fn session_xfer(session : &mut Session, watch_rx0 : &mut watch::Receiver<H
         
     }
     session.output_packets += batch_xfer.output.packets;
-    session.input_pacekts += batch_xfer.input.packets;
+    //session.input_pacekts += batch_xfer.input.packets;
 
     if result.is_ok() {
         result = session_read_remains(session, &mut batch_xfer).await;
