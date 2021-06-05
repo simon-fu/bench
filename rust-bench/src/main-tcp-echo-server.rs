@@ -20,6 +20,9 @@ use clap::{Clap};
 struct Config{
     #[clap(short='a', long, default_value = "127.0.0.1:7000", long_about="listen address.")]
     address: String, 
+
+    #[clap(short='l', long, default_value = "1024", long_about="buffer size")]
+    length: usize,
 }
 
 enum SessionEvent {
@@ -86,12 +89,12 @@ impl Server{
     
 }
 
-async fn session_entry(mut socket : TcpStream, input_bytes:&mut u32){
+async fn session_entry(mut socket : TcpStream, buf_size : usize, input_bytes:&mut u32){
     loop {
         let ready = socket.ready(Interest::READABLE).await.expect("fail to check socket ready state");
 
         if ready.is_readable() {
-            let mut buf = vec![0; 1024];
+            let mut buf = vec![0; buf_size];
 
             match socket.try_read(&mut buf) {
                 Ok(n) => {
@@ -134,6 +137,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     xrs::tracing_subscriber::init_simple_milli();
 
     let cfg = Config::parse();
+    let buf_size = cfg.length;
     let listener = TcpListener::bind(&cfg.address).await?;
     info!("Listening on: {}", cfg.address);
 
@@ -151,7 +155,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         serv.add_session();
                         tokio::spawn(async move {
                             let mut input_bytes:u32 = 0;
-                            session_entry(socket, &mut input_bytes).await;
+                            session_entry(socket, buf_size, &mut input_bytes).await;
                             let _=tx0.send(SessionEvent::Finished { input_bytes }).await;
                         });
                     },
