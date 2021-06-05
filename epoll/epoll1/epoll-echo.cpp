@@ -235,6 +235,16 @@ public:
 			exit(1);
 		}
 
+		{
+			int enable_reuse = 1;
+			if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable_reuse, sizeof(int)) < 0){
+				int error = errno;
+				dbge("setsockopt(SO_REUSEADDR) failed, error=[%d]-[%s]", error, strerror(error));
+				exit(1);
+			}
+		}
+
+
 		addr.sin_family = AF_INET;
 		addr.sin_addr.s_addr = htonl(INADDR_ANY);
 		addr.sin_port = htons(port);
