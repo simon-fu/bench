@@ -76,7 +76,10 @@ pub mod tracing_subscriber{
 
 
 pub mod speed{
-    use std::collections::VecDeque;
+    use std::{collections::VecDeque, time::Duration};
+
+    use tokio::time;
+    use tokio::time::Instant;
 
     pub struct Test{
         d1 : i32,
@@ -154,6 +157,46 @@ pub mod speed{
             Speed {
                 sum : 0,
                 history : VecDeque::new()
+            }
+        }
+    }
+
+    pub struct Pacer{
+        kick_time : Instant,
+        speed : u64,
+    }
+    
+    impl Pacer{
+        pub fn new(speed : u64) -> Self {
+            Pacer {
+                kick_time: Instant::now(),
+                speed,
+            }
+        }
+    
+        pub fn kick(&mut self) {
+            self.kick_time = Instant::now();
+            self.kick_time.elapsed();
+        }
+    
+        pub fn elapsed(&self) -> Duration {
+            self.kick_time.elapsed()
+        }
+    
+        pub fn kick_time(&self) -> &Instant {
+            &self.kick_time
+        }
+    
+        pub fn get_wait_milli(&self, n : u64) -> i64{
+            let expect = 1000 * n / self.speed;
+            let diff = expect as i64 - self.kick_time.elapsed().as_millis() as i64;
+            return diff;
+        }
+    
+        pub async fn check_wait(&self, n : u64) {
+            let diff = self.get_wait_milli(n);
+            if diff > 0 {
+                time::sleep(Duration::from_millis(diff as u64)).await;
             }
         }
     }

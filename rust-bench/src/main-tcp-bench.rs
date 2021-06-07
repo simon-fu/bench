@@ -2,6 +2,7 @@
 
 mod xrs;
 use xrs::speed::Speed;
+use xrs::speed::Pacer;
 use xrs::traffic::{Transfer};
 
 use std::fmt::Debug;
@@ -20,6 +21,7 @@ use tracing::{info, debug, error};
 
 use bytes::{Buf, BytesMut};
 use clap::{Clap, IntoApp};
+
 
 
 
@@ -354,46 +356,6 @@ async fn session_write<'a>(wr : &mut tokio::net::tcp::WriteHalf<'a>, out_buf:&mu
         },
     }
     return Ok(false);
-}
-
-pub struct Pacer{
-    kick_time : Instant,
-    speed : u64,
-}
-
-impl Pacer{
-    pub fn new(speed : u64) -> Self {
-        Pacer {
-            kick_time: Instant::now(),
-            speed,
-        }
-    }
-
-    pub fn kick(&mut self) {
-        self.kick_time = Instant::now();
-        self.kick_time.elapsed();
-    }
-
-    pub fn elapsed(&self) -> Duration {
-        self.kick_time.elapsed()
-    }
-
-    pub fn kick_time(&self) -> &Instant {
-        &self.kick_time
-    }
-
-    pub fn get_wait_milli(&self, n : u64) -> i64{
-        let expect = 1000 * n / self.speed;
-        let diff = expect as i64 - self.kick_time.elapsed().as_millis() as i64;
-        return diff;
-    }
-
-    pub async fn check_wait(&self, n : u64) {
-        let diff = self.get_wait_milli(n);
-        if diff > 0 {
-            time::sleep(Duration::from_millis(diff as u64)).await;
-        }
-    }
 }
 
 async fn session_read_remains(session : &mut Session, batch_xfer : &mut Transfer) -> Result<()>{
