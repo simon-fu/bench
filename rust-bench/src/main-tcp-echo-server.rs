@@ -138,6 +138,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let cfg = Config::parse();
     let buf_size = cfg.length;
+    debug!("cfg={:?}", cfg);
+    
     let listener = TcpListener::bind(&cfg.address).await?;
     info!("Listening on: {}", cfg.address);
 

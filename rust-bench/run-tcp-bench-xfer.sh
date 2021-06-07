@@ -1,4 +1,4 @@
 
-CMD="cargo run --release --bin tcp-bench -- -c 2 -t 30 -s 1000 -l 512 --packets 1000000 $@"
+CMD="cargo run --release --bin tcp-bench -- -c 1 -t 30 -l 512 --packets 2000000 $@"
 echo $CMD
 $CMD
