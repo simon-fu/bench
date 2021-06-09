@@ -3,15 +3,20 @@
 #![warn(rust_2018_idioms)]
 
 mod xrs;
+use bytes::Buf;
+use bytes::BytesMut;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use xrs::speed::Speed;
 
 use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{self, Instant};
-use tokio::{io::{self, AsyncWriteExt, Interest}};
 use tracing::{error, info, debug};
-use std::{error::Error, time::Duration};
+
+use std::{time::Duration};
 use clap::{Clap};
+use bytes::Bytes;
 
 const CHECK_PRINT_INTERVAL: u64 = 1000;
 const SPEED_REPORT_INTERVAL: u64 = 1000;
@@ -19,7 +24,7 @@ const SPEED_CAP_DURATION: i64 = 4000;
 
 // refer https://github.com/clap-rs/clap/tree/master/clap_derive/examples
 #[derive(Clap, Debug)]
-#[clap(name="tcp echo server", author, about, version)]
+#[clap(name="tcp fanout server", author, about, version)]
 struct Config{
     #[clap(short='a', long, default_value = "127.0.0.1:7000", long_about="listen address.")]
     address: String, 
@@ -92,8 +97,13 @@ impl BWStati{
 }
 
 enum SessionEvent {
-    Xfer { ibytes:u32, obytes:u32},
+    Xfer {ts: i64, ibytes:u32, obytes:u32},
     Finished ,
+}
+
+#[derive(Clone)]
+enum BcastEvent {
+    Data { buf : Bytes},
 }
 
 
@@ -133,7 +143,7 @@ impl Server{
         if self.bw.updated {
             self.bw.updated = false;
             is_print = true;
-            info!("Transfer:  recv {} B ({} KB/s),  send {} B ({} KB/s)", 
+            info!("Transfer: recv {} B ({} KB/s), send {} B ({} KB/s)", 
                 self.bw.input.bytes, self.bw.input.speed.cap_average(SPEED_CAP_DURATION, xrs::time::now_millis())/1000, 
                 self.bw.output.bytes, self.bw.output.speed.cap_average(SPEED_CAP_DURATION, xrs::time::now_millis())/1000);
         }
@@ -161,11 +171,11 @@ impl Server{
     fn process_ev(self: &mut Self, ev : &SessionEvent) {
         //trace!("process_ev {:?}", ev);
         match ev {
-            SessionEvent::Xfer { ibytes, obytes } => {
+            SessionEvent::Xfer {ts, ibytes, obytes } => {
                 self.bw.input.bytes += *ibytes as u64;
                 self.bw.output.bytes += *obytes as u64;
-                self.bw.input.speed.add(xrs::time::now_millis(), (*ibytes).into());
-                self.bw.output.speed.add(xrs::time::now_millis(), (*ibytes).into());
+                self.bw.input.speed.add(*ts, (*ibytes).into());
+                self.bw.output.speed.add(*ts, (*obytes).into());
                 self.bw.updated = true;
             },
 
@@ -184,70 +194,95 @@ impl Default for Server {
     }
 }
 
-async fn session_entry(mut socket : TcpStream, buf_size : usize, tx0: mpsc::Sender<SessionEvent>){
+
+async fn session_entry(mut socket : TcpStream, buf_size : usize, tx: mpsc::Sender<SessionEvent>, tx_bc : broadcast::Sender<BcastEvent>, mut rx_bc : broadcast::Receiver<BcastEvent>){
     let mut ibytes:u32 = 0;
     let mut obytes:u32 = 0;
-    let mut last_report_time = Instant::now();
-    loop {
-        let ready = socket.ready(Interest::READABLE).await.expect("fail to check socket ready state");
-
-        if ready.is_readable() {
-            let mut buf = vec![0; buf_size];
-
-            match socket.try_read(&mut buf) {
-                Ok(n) => {
-                    
-                    if n == 0 {
-                        // gracefully closed
-                        break;
-                    }
-                    ibytes += n as u32;
+    let mut in_buf = BytesMut::with_capacity(buf_size);
+    let (mut rd, mut wr) = socket.split();
+    let mut next_report_time = Instant::now() + Duration::from_millis(SPEED_REPORT_INTERVAL);
+    let mut out_buf = Bytes::new();
     
-                    let result = socket.write_all(&buf[0..n]).await;
-                    match result {
-                        Ok(_) => {obytes += n as u32;},
-                        Err(e) => {
-                            debug!("failed to write data to socket, error=[{}]", e);
+    loop {
+
+        tokio::select! {
+            r = rd.read_buf(&mut in_buf) => {
+                match r {
+                    Ok(n) => {
+                        if n == 0 {
                             break;
-                        },
-                    }
-                }
+                        }
 
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    continue;
-                }
+                        //trace!("read bytes {}", n);
+                        ibytes += n as u32;
 
-                Err(e) => {
-                    debug!("failed to read data from socket, error=[{}]", e);
-                    break;
+                        if in_buf.len() == buf_size {
+                            let buf = in_buf.freeze();
+                            in_buf = BytesMut::with_capacity(buf_size);
+                            let _ = tx_bc.send(BcastEvent::Data { buf});
+                        }
+                    },
+                    Err(e) => {
+                        debug!("failed to read socket, error=[{}]", e);
+                        break;
+                    },
                 }
             }
 
-            if last_report_time.elapsed().as_millis() >= SPEED_REPORT_INTERVAL.into() {
+            r = wr.write_buf(&mut out_buf), if out_buf.remaining() > 0 => {
+                match r {
+                    Ok(n) => {
+                        //trace!("written bytes {}", n);
+                        obytes += n as u32;
+                    },
+                    Err(e) => {
+                        debug!("failed to write socket, error=[{}]", e);
+                        break;
+                    },
+                }
+            }
+
+
+            r = rx_bc.recv(), if out_buf.remaining() == 0 => {
+                match r {
+                    Ok(ev) => {
+                        match ev{
+                            BcastEvent::Data { buf } => {
+                                //trace!("from broadcast bytes {}", buf.remaining());
+                                out_buf = buf;
+                            },
+                        }
+                    },
+                    Err(e) => {
+                        debug!("failed to recv broadcast, error=[{}]", e);
+                        break;
+                    },
+                }
+            }
+
+            _ = time::sleep_until(next_report_time) => {
                 if ibytes > 0 || obytes > 0 {
-                    let _=tx0.send(SessionEvent::Xfer{ ibytes, obytes}).await;
+                    let _=tx.send(SessionEvent::Xfer{ts:xrs::time::now_millis(), ibytes, obytes}).await;
                     ibytes = 0;
                     obytes = 0;
                 }
-                last_report_time = Instant::now();
+                next_report_time = Instant::now() + Duration::from_millis(SPEED_REPORT_INTERVAL);
             }
-
-
-        }
+        };
     }
 
     if ibytes > 0 || obytes > 0 {
-        let _=tx0.send(SessionEvent::Xfer{ ibytes, obytes}).await;
+        let _=tx.send(SessionEvent::Xfer{ts:xrs::time::now_millis(), ibytes, obytes}).await;
     }
 
-    let _=tx0.send(SessionEvent::Finished).await;
+    let _=tx.send(SessionEvent::Finished).await;
 }
 
 
 
 //#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     xrs::tracing_subscriber::init_simple_milli();
 
@@ -257,11 +292,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
 
     let listener = TcpListener::bind(&cfg.address).await?;
-    info!("tcp echo server listening on {}", cfg.address);
+    info!("tcp fanout server listening on {}", cfg.address);
 
     let mut serv = Server::new();
-    let (tx, mut rx) = mpsc::channel(1024);
+    let (tx0, mut rx0) = mpsc::channel(1024);
+    
     let mut next_print_time = Instant::now() + Duration::from_millis(1000);
+
+    let (tx_bc0, _) = broadcast::channel(1024);
+
 
     loop {
 
@@ -269,10 +308,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             result = listener.accept() => {
                 match result{
                     Ok((socket, _)) => {
-                        let tx0 = tx.clone();
+                        let tx = tx0.clone();
+                        let tx_bc = tx_bc0.clone();
+                        let rx_bc = tx_bc0.subscribe();
                         serv.add_session();
                         tokio::spawn(async move {
-                            session_entry(socket, buf_size, tx0).await;
+                            session_entry(socket, buf_size, tx, tx_bc, rx_bc).await;
                         });
                     },
                     Err(_) => {}, 
@@ -284,7 +325,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 next_print_time = Instant::now() + Duration::from_millis(1000);
             }
 
-            result = rx.recv() => {
+            result = rx0.recv() => {
                 match result {
                     Some(ev) => {
                         serv.process_ev(&ev);

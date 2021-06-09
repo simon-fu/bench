@@ -103,6 +103,17 @@ pub mod speed{
             self.history.clear();
         }
 
+        // pub fn debug(self: &Self) -> (i64, i64) {
+        //     let duration = if self.history.is_empty() {
+        //         0
+        //     } else {
+        //         let d = self.history.back().unwrap().ts - self.history.front().unwrap().ts;
+        //         if d > 0 {d} else {0}
+        //     };
+
+        //     (self.sum, duration)
+        // }
+
         pub fn add(self: &mut Self, ts : i64, num : i64){
             self.history.push_back(TsI64{ts, num});
             self.sum += num;
@@ -188,6 +199,10 @@ pub mod speed{
         }
     
         pub fn get_wait_milli(&self, n : u64) -> i64{
+            if self.speed == 0 {
+                return std::i64::MAX/2;
+            }
+            
             let expect = 1000 * n / self.speed;
             let diff = expect as i64 - self.kick_time.elapsed().as_millis() as i64;
             return diff;
@@ -252,7 +267,34 @@ pub mod traffic{
         }
     }
     
-    
+    #[derive(Debug)]
+    pub struct Speeds {
+        pub packets: super::speed::Speed,
+        pub bytes: super::speed::Speed,
+    }
+
+    impl Speeds {
+        pub fn clear(& mut self) {
+            self.packets.clear();
+            self.bytes.clear();
+        }
+
+        pub fn add(& mut self, ts : i64, traffic : &Traffic){
+            self.packets.add(ts, traffic.packets as i64);
+            self.bytes.add(ts, traffic.bytes as i64);
+        }
+    }
+
+    impl Default for Speeds {
+        fn default() -> Speeds {
+            Speeds {
+                packets: super::speed::Speed::default(),
+                bytes: super::speed::Speed::default(),
+            }
+        }
+    }
+
+
     #[derive(Debug)]
     #[derive(Copy, Clone)]
     pub struct Transfer {
