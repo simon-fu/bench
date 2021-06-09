@@ -217,20 +217,6 @@ impl  MasterState {
             self.recv_speed.packets.cap_average(2000, xrs::time::now_millis()),
             self.recv_speed.bytes.cap_average(2000, xrs::time::now_millis())/1000,
         );
-
-        //info!("aaa=> data {:?}", data);
-        // info!("  send_speed {:?}", self.send_speed.packets.debug(), );
-        // info!("  recv_speed {:?}", self.recv_speed.packets.debug(), );
-        
-        // let duration = self.last_xfer_ts - self.start_xfer_ts;
-        // info!( "Send {} q, {} B ({} q/s, {} KB/s),   Recv {} q, {} B ({} q/s, {} KB/s)", 
-        //     self.xfer.output.packets, self.xfer.output.bytes, 
-        //     if duration > 0 {1000*self.xfer.output.packets as i64 / duration} else {0},
-        //     if duration > 0 {1000*self.xfer.output.bytes as i64 / duration / 1000} else {0},
-        //     self.xfer.input.packets, self.xfer.input.bytes,
-        //     if duration > 0 {1000*self.xfer.input.packets as i64 / duration} else {0},
-        //     if duration > 0 {1000*self.xfer.input.bytes as i64 / duration / 1000} else {0},
-        // );
     }
 
     fn check_print_xfer(self: &mut Self){
@@ -587,28 +573,25 @@ async fn bench(cfg : Arc<Config>){
         tokio::spawn(async move{
             session_entry(session, watch_rx0).await;
         });
-
-        {
-            let master_action = state.check_event(& mut rx,  &mut next_print_time, &deadline, &dead_line_msg);
-            tokio::pin!(master_action);
+        
+        loop {
+            let expect = 1000 * n / cfg.speed;
+            let diff = expect as i64 - kick_time.elapsed().as_millis() as i64;
+            if diff <= 0{
+                break;
+            }
             
-            loop {
-                let expect = 1000 * n / cfg.speed;
-                let diff = expect as i64 - kick_time.elapsed().as_millis() as i64;
-                if diff <= 0{
+            tokio::select! {
+                _ = time::sleep(Duration::from_millis(diff as u64)) => {
                     break;
                 }
-                
-                tokio::select! {
-                    _ = time::sleep(Duration::from_millis(diff as u64)) => {
-                        break;
-                    }
-                    true = &mut master_action =>{
+                r = state.check_event(& mut rx,  &mut next_print_time, &deadline, &dead_line_msg) =>{
+                    if r {
                         is_finished = true;
                         break;
                     }
-                };
-            }
+                }
+            };
         }
 
         if is_finished{
