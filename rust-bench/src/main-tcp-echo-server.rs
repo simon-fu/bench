@@ -261,7 +261,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut serv = Server::new();
     let (tx, mut rx) = mpsc::channel(1024);
-    let mut next_print_time = Instant::now() + Duration::from_millis(1000);
+    let mut next_print_time = Instant::now() + Duration::from_millis(CHECK_PRINT_INTERVAL);
 
     loop {
 
@@ -281,7 +281,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             _ = time::sleep_until(next_print_time) => {
                 serv.check_print_sessions();
-                next_print_time = Instant::now() + Duration::from_millis(1000);
+                next_print_time = Instant::now() + Duration::from_millis(CHECK_PRINT_INTERVAL);
             }
 
             result = rx.recv() => {
