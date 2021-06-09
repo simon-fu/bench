@@ -13,6 +13,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{self, Instant};
 use tracing::{error, info, debug};
 
+use std::sync::Arc;
 use std::{time::Duration};
 use clap::{Clap};
 use bytes::Bytes;
@@ -194,10 +195,10 @@ impl Default for Server {
 }
 
 
-async fn session_entry(mut socket : TcpStream, buf_size : usize, tx: mpsc::Sender<SessionEvent>, tx_bc : broadcast::Sender<BcastEvent>, mut rx_bc : broadcast::Receiver<BcastEvent>){
+async fn session_entry(mut socket : TcpStream, cfg : Arc<Config>, tx: mpsc::Sender<SessionEvent>, tx_bc : broadcast::Sender<BcastEvent>, mut rx_bc : broadcast::Receiver<BcastEvent>){
     let mut ibytes:u32 = 0;
     let mut obytes:u32 = 0;
-    let mut in_buf = BytesMut::with_capacity(buf_size);
+    let mut in_buf = BytesMut::with_capacity(cfg.length);
     let (mut rd, mut wr) = socket.split();
     let mut next_report_time = Instant::now() + Duration::from_millis(SPEED_REPORT_INTERVAL);
     let mut out_buf = Bytes::new();
@@ -215,9 +216,9 @@ async fn session_entry(mut socket : TcpStream, buf_size : usize, tx: mpsc::Sende
                         //trace!("read bytes {}", n);
                         ibytes += n as u32;
 
-                        if in_buf.len() == buf_size {
+                        if in_buf.len() == cfg.length {
                             let buf = in_buf.freeze();
-                            in_buf = BytesMut::with_capacity(buf_size);
+                            in_buf = BytesMut::with_capacity(cfg.length);
                             let _ = tx_bc.send(BcastEvent::Data { buf});
                         }
                     },
@@ -285,13 +286,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     xrs::tracing_subscriber::init_simple_milli();
 
-    let cfg = Config::parse();
-    info!("cfg={:?}", cfg);
-    let buf_size = cfg.length;
+    let cfg0 = Config::parse();
+    info!("cfg={:?}", cfg0);
+    let cfg0 = Arc::new(cfg0);
     
 
-    let listener = TcpListener::bind(&cfg.address).await?;
-    info!("tcp fanout server listening on {}", cfg.address);
+    let listener = TcpListener::bind(&cfg0.address).await?;
+    info!("tcp fanout server listening on {}", cfg0.address);
 
     let mut serv = Server::new();
     let (tx0, mut rx0) = mpsc::channel(10240);
@@ -307,12 +308,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             result = listener.accept() => {
                 match result{
                     Ok((socket, _)) => {
+                        let cfg = cfg0.clone();
                         let tx = tx0.clone();
                         let tx_bc = tx_bc0.clone();
                         let rx_bc = tx_bc0.subscribe();
                         serv.add_session();
                         tokio::spawn(async move {
-                            session_entry(socket, buf_size, tx, tx_bc, rx_bc).await;
+                            session_entry(socket, cfg, tx, tx_bc, rx_bc).await;
                         });
                     },
                     Err(_) => {}, 
