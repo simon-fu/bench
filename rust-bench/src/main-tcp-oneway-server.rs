@@ -2,20 +2,17 @@
 
 
 mod xrs;
-use bytes::Buf;
 use bytes::BytesMut;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt};
 use xrs::speed::Speed;
 
 use tokio::sync::mpsc;
-use tokio::sync::broadcast;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{self, Instant};
 use tracing::{error, info, debug};
 
 use std::{time::Duration};
 use clap::{Clap};
-use bytes::Bytes;
 
 const CHECK_PRINT_INTERVAL: u64 = 1000;
 const SPEED_REPORT_INTERVAL: u64 = 1000;
@@ -23,7 +20,7 @@ const SPEED_CAP_DURATION: i64 = 4000;
 
 // refer https://github.com/clap-rs/clap/tree/master/clap_derive/examples
 #[derive(Clap, Debug)]
-#[clap(name="tcp fanout server", author, about, version)]
+#[clap(name="tcp one-way server", author, about, version)]
 struct Config{
     #[clap(short='a', long, default_value = "127.0.0.1:7000", long_about="listen address.")]
     address: String, 
@@ -98,11 +95,6 @@ impl BWStati{
 enum SessionEvent {
     Xfer {ts: i64, ibytes:u32, obytes:u32},
     Finished ,
-}
-
-#[derive(Clone)]
-enum BcastEvent {
-    Data { buf : Bytes},
 }
 
 
@@ -194,13 +186,12 @@ impl Default for Server {
 }
 
 
-async fn session_entry(mut socket : TcpStream, buf_size : usize, tx: mpsc::Sender<SessionEvent>, tx_bc : broadcast::Sender<BcastEvent>, mut rx_bc : broadcast::Receiver<BcastEvent>){
+async fn session_entry(mut socket : TcpStream, buf_size : usize, tx: mpsc::Sender<SessionEvent>){
     let mut ibytes:u32 = 0;
     let mut obytes:u32 = 0;
     let mut in_buf = BytesMut::with_capacity(buf_size);
-    let (mut rd, mut wr) = socket.split();
+    let (mut rd, _) = socket.split();
     let mut next_report_time = Instant::now() + Duration::from_millis(SPEED_REPORT_INTERVAL);
-    let mut out_buf = Bytes::new();
     
     loop {
 
@@ -216,44 +207,13 @@ async fn session_entry(mut socket : TcpStream, buf_size : usize, tx: mpsc::Sende
                         ibytes += n as u32;
 
                         if in_buf.len() == buf_size {
-                            let buf = in_buf.freeze();
-                            in_buf = BytesMut::with_capacity(buf_size);
-                            let _ = tx_bc.send(BcastEvent::Data { buf});
+                            unsafe {
+                                in_buf.set_len(0);
+                            }
                         }
                     },
                     Err(e) => {
                         debug!("failed to read socket, error=[{}]", e);
-                        break;
-                    },
-                }
-            }
-
-            r = wr.write_buf(&mut out_buf), if out_buf.remaining() > 0 => {
-                match r {
-                    Ok(n) => {
-                        //trace!("written bytes {}", n);
-                        obytes += n as u32;
-                    },
-                    Err(e) => {
-                        debug!("failed to write socket, error=[{}]", e);
-                        break;
-                    },
-                }
-            }
-
-
-            r = rx_bc.recv(), if out_buf.remaining() == 0 => {
-                match r {
-                    Ok(ev) => {
-                        match ev{
-                            BcastEvent::Data { buf } => {
-                                //trace!("from broadcast bytes {}", buf.remaining());
-                                out_buf = buf;
-                            },
-                        }
-                    },
-                    Err(e) => {
-                        debug!("failed to recv broadcast, error=[{}]", e);
                         break;
                     },
                 }
@@ -291,15 +251,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
 
     let listener = TcpListener::bind(&cfg.address).await?;
-    info!("tcp fanout server listening on {}", cfg.address);
+    info!("tcp one-way server listening on {}", cfg.address);
 
     let mut serv = Server::new();
     let (tx0, mut rx0) = mpsc::channel(10240);
     
     let mut next_print_time = Instant::now() + Duration::from_millis(1000);
-
-    let (tx_bc0, _) = broadcast::channel(10240);
-
 
     loop {
 
@@ -308,11 +265,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match result{
                     Ok((socket, _)) => {
                         let tx = tx0.clone();
-                        let tx_bc = tx_bc0.clone();
-                        let rx_bc = tx_bc0.subscribe();
                         serv.add_session();
                         tokio::spawn(async move {
-                            session_entry(socket, buf_size, tx, tx_bc, rx_bc).await;
+                            session_entry(socket, buf_size, tx).await;
                         });
                     },
                     Err(_) => {}, 

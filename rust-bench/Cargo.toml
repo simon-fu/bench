@@ -22,6 +22,13 @@ path = "src/main-tcp-fanout-server.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "tcp-oneway-server"
+path = "src/main-tcp-oneway-server.rs"
+test = false
+bench = false
+
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
