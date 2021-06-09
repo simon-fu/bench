@@ -3,7 +3,7 @@
 
 mod xrs;
 use bytes::BytesMut;
-use tokio::io::{AsyncReadExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use xrs::speed::Speed;
 
 use tokio::sync::mpsc;
@@ -11,12 +11,32 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{self, Instant};
 use tracing::{error, info, debug};
 
+use std::io::Cursor;
+use std::sync::Arc;
 use std::{time::Duration};
 use clap::{Clap};
 
 const CHECK_PRINT_INTERVAL: u64 = 1000;
 const SPEED_REPORT_INTERVAL: u64 = 1000;
 const SPEED_CAP_DURATION: i64 = 4000;
+
+// #[derive(Debug)]
+// enum Direction {
+//     Send,
+//     Recv,
+// }
+
+// impl FromStr for Direction {
+//     type Err = &'static str;
+//     fn from_str(s: &str) -> Result<Self, Self::Err> {
+//         match s {
+//             "send" => Ok(Direction::Send),
+//             "recv" => Ok(Direction::Recv),
+//             _ => Err("no match"),
+//         }
+//     }
+// }
+
 
 // refer https://github.com/clap-rs/clap/tree/master/clap_derive/examples
 #[derive(Clap, Debug)]
@@ -27,6 +47,15 @@ struct Config{
 
     #[clap(short='l', long, default_value = "512", long_about="buffer size")]
     length: usize,
+
+    // #[clap(long, default_value = "recv", long_about="data direction")]
+    // direction: Direction,
+
+    #[clap(long, long_about="enable sending data")]
+    enable_send: bool,
+
+    #[clap(long, long_about="disable recving data")]
+    disable_recv: bool,
 }
 
 struct Bandwidth{
@@ -186,17 +215,18 @@ impl Default for Server {
 }
 
 
-async fn session_entry(mut socket : TcpStream, buf_size : usize, tx: mpsc::Sender<SessionEvent>){
+async fn session_entry(mut socket : TcpStream, cfg : Arc<Config>, tx: mpsc::Sender<SessionEvent>){
     let mut ibytes:u32 = 0;
     let mut obytes:u32 = 0;
-    let mut in_buf = BytesMut::with_capacity(buf_size);
-    let (mut rd, _) = socket.split();
+    let mut in_buf = BytesMut::with_capacity(cfg.length);
+    let mut out_buf = Cursor::new(vec![0; cfg.length]);
+    let (mut rd, mut wr) = socket.split();
     let mut next_report_time = Instant::now() + Duration::from_millis(SPEED_REPORT_INTERVAL);
-    
+
     loop {
 
         tokio::select! {
-            r = rd.read_buf(&mut in_buf) => {
+            r = rd.read_buf(&mut in_buf), if !cfg.disable_recv => {
                 match r {
                     Ok(n) => {
                         if n == 0 {
@@ -205,15 +235,31 @@ async fn session_entry(mut socket : TcpStream, buf_size : usize, tx: mpsc::Sende
 
                         //trace!("read bytes {}", n);
                         ibytes += n as u32;
-
-                        if in_buf.len() == buf_size {
-                            unsafe {
-                                in_buf.set_len(0);
-                            }
+                        unsafe {
+                            in_buf.set_len(0);
                         }
                     },
                     Err(e) => {
                         debug!("failed to read socket, error=[{}]", e);
+                        break;
+                    },
+                }
+            }
+
+            r = wr.write_buf(&mut out_buf), if cfg.enable_send => {
+                match r {
+                    Ok(n) => {
+                        if n == 0 {
+                            break;
+                        }
+
+                        //trace!("written bytes {}", n);
+                        obytes += n as u32;
+                        out_buf.set_position(0);
+                        
+                    },
+                    Err(e) => {
+                        debug!("failed to write socket, error=[{}]", e);
                         break;
                     },
                 }
@@ -245,13 +291,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     xrs::tracing_subscriber::init_simple_milli();
 
-    let cfg = Config::parse();
-    info!("cfg={:?}", cfg);
-    let buf_size = cfg.length;
+    let cfg0 = Config::parse();
+    info!("cfg={:?}", cfg0);
+    let cfg0 = Arc::new(cfg0);
     
 
-    let listener = TcpListener::bind(&cfg.address).await?;
-    info!("tcp one-way server listening on {}", cfg.address);
+    let listener = TcpListener::bind(&cfg0.address).await?;
+    info!("tcp one-way server listening on {}", cfg0.address);
 
     let mut serv = Server::new();
     let (tx0, mut rx0) = mpsc::channel(10240);
@@ -264,10 +310,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             result = listener.accept() => {
                 match result{
                     Ok((socket, _)) => {
+                        let cfg = cfg0.clone();
                         let tx = tx0.clone();
                         serv.add_session();
                         tokio::spawn(async move {
-                            session_entry(socket, buf_size, tx).await;
+                            session_entry(socket, cfg, tx).await;
                         });
                     },
                     Err(_) => {}, 
