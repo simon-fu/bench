@@ -7,6 +7,7 @@ use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 use xrs::speed::Speed;
+use xrs::traffic::Traffic;
 
 use tokio::sync::mpsc;
 use tokio::sync::broadcast;
@@ -123,7 +124,7 @@ enum SessionEvent {
     Finished {pid:u32} ,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum BcastEvent {
     Data { buf : Bytes},
 }
@@ -192,7 +193,7 @@ impl Server{
 
     }
 
-    async fn process_ev(self: &mut Self, ev : &SessionEvent) {
+    fn process_ev(self: &mut Self, ev : &SessionEvent) {
         //trace!("process_ev {:?}", ev);
         match ev {
             SessionEvent::Xfer {ts, ibytes, obytes } => {
@@ -203,10 +204,10 @@ impl Server{
                 self.bw.updated = true;
             },
 
-            SessionEvent::Finished { pid } => {
+            SessionEvent::Finished { pid:_pid } => {
                 self.conns.count -= 1;
                 self.conns.updated = true;
-                self.hub.remove(*pid).await;
+                //self.hub.remove(*pid).await;
             }
         };
     }
@@ -352,31 +353,58 @@ fn spawn_tasks_broadcast(pid:u32, socket : TcpStream, cfg0 : &Arc<Config>, tx0: 
 
 
 
-async fn session_entry_hub(pid:u32, mut socket : TcpStream, cfg : Arc<Config>, tx: mpsc::Sender<SessionEvent>, mut rx_data : mpsc::Receiver<BcastEvent>, hub : Arc<Hub>){
+async fn session_entry_hub(pid:u32, mut socket : TcpStream, cfg : Arc<Config>, tx: mpsc::Sender<SessionEvent>, rx_data : & mut mpsc::Receiver<BcastEvent>, hub : &Arc<Hub>){
+    let mut socket_in_traffic = Traffic::default();
+    let mut socket_out_traffic = Traffic::default();
+    let mut channel_in_traffic = Traffic::default();
+    let mut channel_out_traffic = Traffic::default();
+
     let mut ibytes:u32 = 0;
     let mut obytes:u32 = 0;
-    let mut in_buf = BytesMut::with_capacity(cfg.length);
-    let (mut rd, mut wr) = socket.split();
-    let mut next_report_time = Instant::now() + Duration::from_millis(SPEED_REPORT_INTERVAL);
+
+    let mut in_buf1 = BytesMut::with_capacity(cfg.length);
+    let mut in_buf2 = Bytes::new();
+    
     let mut out_buf = Bytes::new();
     
+    let (mut rd, mut wr) = socket.split();
+    let mut next_report_time = Instant::now() + Duration::from_millis(SPEED_REPORT_INTERVAL);
+
+    
     loop {
+        //info!("aaa <{}> loop, out_buf.remaining {}, in_buf2.remaining {}, in_buf1.len {}, cfg.length {}", pid, out_buf.remaining(), in_buf2.remaining(), in_buf1.len(), cfg.length);
+        
+        if in_buf2.remaining() == 0 && in_buf1.len() == cfg.length{
+            in_buf2 = in_buf1.freeze();
+            in_buf1 = BytesMut::with_capacity(cfg.length);
+        }
+
         tokio::select! {
-            r = rd.read_buf(&mut in_buf) => {
+
+            r = rd.read_buf(&mut in_buf1), if in_buf1.len() < cfg.length => {
                 match r {
                     Ok(n) => {
+                        socket_in_traffic.bytes += n as u64;
+                        if in_buf1.len() == cfg.length {
+                            socket_in_traffic.packets += 1;
+                        }
+                        // info!("aaa <{}> read socket ok, n={}, socket_in_traffic {:?}", pid, n, socket_in_traffic);
+
                         if n == 0 {
                             break;
                         }
 
                         //trace!("read bytes {}", n);
                         ibytes += n as u32;
+                        
 
-                        if in_buf.len() == cfg.length {
-                            let buf = in_buf.freeze();
-                            in_buf = BytesMut::with_capacity(cfg.length);
-                            hub.broadcast(pid, BcastEvent::Data { buf}).await;
-                        }
+                        // if in_buf.len() == cfg.length {
+                        //     let buf = in_buf.freeze();
+                        //     in_buf = BytesMut::with_capacity(cfg.length);
+                        //     info!("aaa before broadcast");
+                        //     hub.broadcast(pid, BcastEvent::Data { buf}).await;
+                        //     info!("aaa after broadcast");
+                        // }
                     },
                     Err(e) => {
                         debug!("failed to read socket, error=[{}]", e);
@@ -385,19 +413,13 @@ async fn session_entry_hub(pid:u32, mut socket : TcpStream, cfg : Arc<Config>, t
                 }
             }
 
-            r = wr.write_buf(&mut out_buf), if out_buf.remaining() > 0 => {
-                match r {
-                    Ok(n) => {
-                        //trace!("written bytes {}", n);
-                        obytes += n as u32;
-                    },
-                    Err(e) => {
-                        debug!("failed to write socket, error=[{}]", e);
-                        break;
-                    },
-                }
-            }
+            _ = hub.broadcast(pid, BcastEvent::Data {buf:in_buf2.clone()}), if in_buf2.remaining() > 0 => {
+                channel_out_traffic.packets += 1;
+                channel_out_traffic.bytes += in_buf2.remaining() as u64;
 
+                // info!("aaa <{}> broadcast channel ok, channel_out_traffic {:?}", pid, channel_out_traffic);
+                in_buf2.advance(in_buf2.remaining());
+            }
 
             r = rx_data.recv(), if out_buf.remaining() == 0 => {
                 match r {
@@ -406,6 +428,10 @@ async fn session_entry_hub(pid:u32, mut socket : TcpStream, cfg : Arc<Config>, t
                             BcastEvent::Data { buf } => {
                                 //trace!("from broadcast bytes {}", buf.remaining());
                                 out_buf = buf;
+
+                                channel_in_traffic.packets += 1;
+                                channel_in_traffic.bytes += out_buf.remaining() as u64;
+                                // info!("aaa <{}> recv channel ok, channel_in_traffic {:?}", pid, channel_in_traffic);
                             },
                         }
                     },
@@ -416,7 +442,27 @@ async fn session_entry_hub(pid:u32, mut socket : TcpStream, cfg : Arc<Config>, t
                 }
             }
 
+            r = wr.write_buf(&mut out_buf), if out_buf.remaining() > 0 => {
+                match r {
+                    Ok(n) => {
+                        socket_out_traffic.bytes += n as u64;
+                        if out_buf.remaining() == 0 {
+                            socket_out_traffic.packets += 1;
+                        }
+
+                        // info!("aaa <{}> write socket ok, n={}, socket_out_traffic {:?}", pid, n, socket_out_traffic);
+                        //trace!("written bytes {}", n);
+                        obytes += n as u32;
+                    },
+                    Err(e) => {
+                        debug!("failed to write socket, error=[{}]", e);
+                        break;
+                    },
+                }
+            }
+
             _ = time::sleep_until(next_report_time) => {
+                // info!("aaa <{}> sleep done", pid);
                 if ibytes > 0 || obytes > 0 {
                     let _=tx.send(SessionEvent::Xfer{ts:xrs::time::now_millis(), ibytes, obytes}).await;
                     ibytes = 0;
@@ -435,11 +481,12 @@ async fn session_entry_hub(pid:u32, mut socket : TcpStream, cfg : Arc<Config>, t
     let _=tx.send(SessionEvent::Finished{pid}).await;
 }
 
-fn spawn_tasks_hub(pid:u32, socket : TcpStream, cfg0 : &Arc<Config>, tx0: &mpsc::Sender<SessionEvent>, rx_data : mpsc::Receiver<BcastEvent>, hub : Arc<Hub>){
+fn spawn_tasks_hub(pid:u32, socket : TcpStream, cfg0 : &Arc<Config>, tx0: &mpsc::Sender<SessionEvent>, mut rx_data : mpsc::Receiver<BcastEvent>, hub : Arc<Hub>){
     let cfg = cfg0.clone();
     let tx = tx0.clone();
     tokio::spawn(async move {
-        session_entry_hub(pid, socket, cfg, tx, rx_data, hub).await;
+        session_entry_hub(pid, socket, cfg, tx, &mut rx_data, &hub).await;
+        hub.remove(pid).await;
     });
 }
 
@@ -475,7 +522,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         pid += 1;
                         serv.add_session();
                         if matches!(cfg0.mode, Mode::Hub) {
-                            let (tx, rx) = mpsc::channel(1024);
+                            let (tx, rx) = mpsc::channel(16);
                             serv.hub.add(PTask{pid, tx}).await;
                             spawn_tasks_hub(pid, socket, &cfg0, &tx0, rx, serv.hub.clone());
                         } else {
@@ -495,7 +542,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             result = rx0.recv() => {
                 match result {
                     Some(ev) => {
-                        serv.process_ev(&ev).await;
+                        serv.process_ev(&ev);
                     },
                     None => {
                         error!("expect session event but got None ")
