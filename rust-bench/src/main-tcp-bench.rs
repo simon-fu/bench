@@ -169,6 +169,13 @@ impl  MasterState {
                 self.send_speed.add(*ts, &data.output);
                 self.recv_speed.add(*ts, &data.input);
                 self.check_xfer(ts);
+                if (self.xfer.output.packets > 0)
+                    && (self.xfer.output.packets == (self.config.packets * self.config.number as u64))
+                    && (self.xfer.input.packets >= self.xfer.output.packets) {
+                    //let _ = watch_tx.send(HubEvent::ExitReq);
+                    self.finished = true;
+                    return self.finished;
+                }
             }
 
             SessionEvent::Finish { .. } => {
@@ -285,7 +292,7 @@ impl  MasterState {
             }
     
             Some(ev) = rx.recv() => {
-                let _ = self.process_ev(&ev); 
+                return self.process_ev(&ev); 
             }
     
             else => {
@@ -477,7 +484,7 @@ async fn session_xfer(session : &mut Session, watch_rx0 : &mut watch::Receiver<H
         
     }
 
-    if result.is_ok() {
+    if result.is_ok() && !matches!(watch_state, HubEvent::ExitReq) {
         result = session_read_remains(session, &mut batch_xfer).await;
     }
 
@@ -540,6 +547,11 @@ async fn session_entry(mut session : Session, mut watch_rx0 : watch::Receiver<Hu
                 let _ = session.tx0.send(SessionEvent::ConnectBroken { ts: xrs::time::now_millis() }).await;
                 break;
             }
+        }
+
+        // waiting for ExitReq
+        while !matches!(watch_state, HubEvent::ExitReq)  {
+            session_watch(&mut watch_rx0, &mut watch_state).await;
         }
 
         break;
