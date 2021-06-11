@@ -385,7 +385,7 @@ async fn session_write<'a>(wr : &mut tokio::net::tcp::WriteHalf<'a>, out_buf:&mu
 
 async fn session_read_remains(session : &mut Session, batch_xfer : &mut Transfer) -> Result<()>{
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(25);
     let (mut rd, _) = session.state.stream.as_mut().unwrap().split();
     //debug!("before reading remains, output {}, input {}, remains {}", 
     //    session.output_packets, session.input_pacekts, session.output_packets-session.input_pacekts);
