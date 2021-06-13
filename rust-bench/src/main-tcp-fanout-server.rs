@@ -500,9 +500,10 @@ impl<'a> DLinkHalf<'a> {
         loop {
             if pending_packet.remaining() > 0 && out_buf.len() < self.cfg.buf_size{
                 out_buf.put(&mut pending_packet);
-                if out_packet.remaining() == 0 && out_buf.len() >= self.cfg.buf_size {
-                    out_packet = out_buf.split_to(self.cfg.buf_size).freeze();
-                }
+            }
+
+            if out_packet.remaining() == 0 && out_buf.len() >= self.cfg.buf_size {
+                out_packet = out_buf.split_to(self.cfg.buf_size).freeze();
             }
 
             select! {
