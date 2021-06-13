@@ -8,14 +8,14 @@
 
 
 mod xrs;
+use xrs::speed::Speed;
 use bytes::Buf;
+use bytes::BufMut;
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::select;
 use tokio::sync::RwLock;
 use tokio::sync::watch;
-use xrs::speed::Speed;
-
 use tokio::sync::mpsc;
 use tokio::sync::broadcast;
 use tokio::net::{TcpListener, TcpStream};
@@ -23,6 +23,7 @@ use tokio::time::{self, Instant};
 use tracing::{error, info, debug};
 
 use std::collections::HashMap;
+use std::process::exit;
 use std::sync::Arc;
 use std::{time::Duration};
 use clap::{Clap};
@@ -56,8 +57,11 @@ struct Config{
     #[clap(short='a', long, default_value = "127.0.0.1:7000", long_about="listen address.")]
     address: String, 
 
-    #[clap(short='l', long, default_value = "512", long_about="buffer size")]
+    #[clap(short='l', long, default_value = "512", long_about="packet length")]
     length: usize,
+
+    #[clap(short='b', long="buffer", default_value = "1024", long_about="buffer size")]
+    buf_size: usize,
 
     #[clap(short='m', long, default_value = "hub", long_about="mode [hub, broadcast].")]
     mode: Mode
@@ -133,7 +137,7 @@ enum SessionEvent {
 
 #[derive(Clone, Debug)]
 enum BcastEvent {
-    Data { buf : Bytes},
+    Data { packet : Bytes},
 }
 
 
@@ -244,9 +248,8 @@ impl Hub {
                 let r  = task.tx.send(ev.clone()).await;
                 match r {
                     Ok(_) => {},
-                    Err(e) => {
-                        error!("broadcast to task fail with [{}]", e);
-                        return ; // TODO: 
+                    Err(_) => {
+                        //debug!("broadcast to task error [{}], pid {}", e, *ppid);
                     },
                 }
             }
@@ -288,9 +291,9 @@ async fn session_entry_broadcast(pid: u32, mut socket : TcpStream, cfg : Arc<Con
                         ibytes += n as u64;
 
                         if in_buf.len() == cfg.length {
-                            let buf = in_buf.freeze();
+                            let packet = in_buf.freeze();
                             in_buf = BytesMut::with_capacity(cfg.length);
-                            let _ = tx_bc.send(BcastEvent::Data { buf});
+                            let _ = tx_bc.send(BcastEvent::Data { packet });
                         }
                     },
                     Err(e) => {
@@ -318,9 +321,9 @@ async fn session_entry_broadcast(pid: u32, mut socket : TcpStream, cfg : Arc<Con
                 match r {
                     Ok(ev) => {
                         match ev{
-                            BcastEvent::Data { buf } => {
+                            BcastEvent::Data { packet } => {
                                 //trace!("from broadcast bytes {}", buf.remaining());
-                                out_buf = buf;
+                                out_buf = packet;
                             },
                         }
                     },
@@ -389,19 +392,46 @@ impl<'a> ULinkHalf<'a> {
             obytes: 0,
         }
     }
-
+    
     async fn run(&mut self, mut watch_rx0 : watch::Receiver<i32>) {
-        let mut in_buf = BytesMut::with_capacity(self.cfg.length);
+        let mut in_buf = BytesMut::with_capacity(self.cfg.buf_size);
+        loop {
+            if self.run_once(&mut watch_rx0, &mut in_buf).await {
+                break;
+            }
+        }
+
+        while in_buf.len() >= self.cfg.length {
+            self.hub.broadcast(self.pid, BcastEvent::Data {packet:in_buf.split_to(self.cfg.length).freeze()}).await;
+        }
+
+        // info!("pid {}: ulink run done", self.pid);
+    }
+
+    async fn run_once(&mut self, watch_rx0 : &mut watch::Receiver<i32>, in_buf : &mut BytesMut) -> bool {
+        
+        let mut done = false;
+        let (mut has_packet, action) = if in_buf.len() >= self.cfg.length {
+            (true, self.hub.broadcast(self.pid, BcastEvent::Data {packet:in_buf.split_to(self.cfg.length).freeze()}))
+        } else {
+            (false, self.hub.broadcast(self.pid, BcastEvent::Data {packet:Bytes::new()}))
+        };
+
+        tokio::pin!(action);
 
         loop {
             select! {
-                r = self.rd.read_buf(&mut in_buf) => {
+                r = self.rd.read_buf(in_buf), if in_buf.len() < self.cfg.buf_size => {
                     match r {
                         Ok(n) => {
                             if n== 0 {
+                                done = true;
                                 break;
                             }
                             self.ibytes += n as u64;
+                            if !has_packet && in_buf.len() >= self.cfg.length {
+                                break;
+                            } 
                         },
                         Err(e) => {
                             error!("read socket error [{}]", e);
@@ -410,37 +440,34 @@ impl<'a> ULinkHalf<'a> {
                     }
                 }
 
+                _ = &mut action, if has_packet => {
+                    self.obytes = self.cfg.length as u64;
+                    has_packet = false;
+                    break;
+                }
+
                 _ = watch_rx0.changed() => {
-                    if *watch_rx0.borrow() > 0 {
+                    if *watch_rx0.borrow() > 0{
+                        done = true;
                         break;
-                    } else {
-                        continue;
-                    }
+                    } 
                 }
             }
-
-            if in_buf.len() < self.cfg.length {
-                continue;
-            }
-
-            self.obytes = in_buf.len() as u64;
-            self.hub.broadcast(self.pid, BcastEvent::Data {buf:in_buf.freeze()}).await;
-            in_buf = BytesMut::with_capacity(self.cfg.length);
-
         }
 
-        if in_buf.len() > 0 {
-            self.obytes = in_buf.len() as u64;
-            self.hub.broadcast(self.pid, BcastEvent::Data {buf:in_buf.freeze()}).await;
+        if has_packet {
+            action.await;
+            self.obytes = self.cfg.length as u64;
         }
 
-        //info!("pid {}: ulink run done", self.pid);
+        return done
     }
-    
 }
 
 
 struct DLinkHalf<'a>{
+    cfg : &'a Arc<Config>,
+    pid : u32,
     wr : tokio::net::tcp::WriteHalf<'a>,
     rx_data : &'a mut mpsc::Receiver<BcastEvent>,
     ibytes : u64,
@@ -449,11 +476,15 @@ struct DLinkHalf<'a>{
 
 impl<'a> DLinkHalf<'a> {
     fn news(
+        cfg : &'a Arc<Config>,
+        pid : u32,
         wr : tokio::net::tcp::WriteHalf<'a>,
         rx_data : &'a mut mpsc::Receiver<BcastEvent>,
     ) -> Self {
 
         DLinkHalf{
+            cfg,
+            pid,
             wr,
             rx_data,
             ibytes: 0,
@@ -461,20 +492,28 @@ impl<'a> DLinkHalf<'a> {
         }
     }
 
-    
     async fn run(&mut self, mut watch_rx0 : watch::Receiver<i32>) {
-        let mut out_buf ; //= Bytes::new();
+        let mut pending_packet= Bytes::new();
+        let mut out_buf = BytesMut::with_capacity(self.cfg.buf_size); 
+        let mut out_packet = Bytes::new();; 
+        
+        loop {
+            if pending_packet.remaining() > 0 && out_buf.len() < self.cfg.buf_size{
+                out_buf.put(&mut pending_packet);
+                if out_packet.remaining() == 0 && out_buf.len() >= self.cfg.buf_size {
+                    out_packet = out_buf.split_to(self.cfg.buf_size).freeze();
+                }
+            }
 
-        loop {                            
             select! {
-                r = self.rx_data.recv() =>{
+                r = self.rx_data.recv(), if pending_packet.remaining() == 0 =>{
                     match r {
                         Some(ev) => {
                             match ev{
-                                BcastEvent::Data { buf } => {
-                                    out_buf = buf;
-                                    self.ibytes += out_buf.remaining() as u64;
-        
+                                BcastEvent::Data { packet } => {
+                                    self.ibytes += packet.remaining() as u64;
+                                    pending_packet = packet;
+                                    //out_buf = buf;
                                 },
                             }
                         },
@@ -485,6 +524,18 @@ impl<'a> DLinkHalf<'a> {
                     }
                 }
 
+                r = self.wr.write_buf(&mut out_packet), if out_packet.remaining() > 0 =>{
+                    match r{
+                        Ok(n) =>{
+                            self.obytes += n as u64;
+                        },
+                        Err(_) => {
+                            //error!("write socket error [{}]", e);
+                            break;
+                        },
+                    }
+                }
+
                 _ = watch_rx0.changed() => {
                     if *watch_rx0.borrow() > 0 {
                         break;
@@ -493,244 +544,68 @@ impl<'a> DLinkHalf<'a> {
                     }
                 }
             }
-
-            while out_buf.remaining() > 0 {
-                let r = self.wr.write_buf(&mut out_buf).await;
-                match r{
-                    Ok(n) =>{self.obytes += n as u64;},
-                    Err(_) => {
-                        //error!("write socket error [{}]", e);
-                        break;
-                    },
-                }
-            }
-
-            if out_buf.remaining() > 0{
-                break;
-            }
-
         }
+
+        // disable more packets coming in
+        self.rx_data.close(); 
 
         //info!("pid {}: dlink run done", self.pid);
     }
 
 }
 
-async fn session_run<'a>(pid:u32, mut socket : TcpStream, cfg : Arc<Config>, tx: mpsc::Sender<SessionEvent>, rx_data : &mut mpsc::Receiver<BcastEvent>, hub : &'a Arc<Hub>) {
+async fn session_run<'a>(pid:u32, mut socket : TcpStream, cfg : Arc<Config>, tx: mpsc::Sender<SessionEvent>, mut rx_data : mpsc::Receiver<BcastEvent>, hub : &'a Arc<Hub>) {
 
     let (watch_tx, watch_rx) = watch::channel(0);
     
     let (rd, wr) = socket.split();
     let mut ulink = ULinkHalf::news(&cfg, pid, rd, hub);
-    let mut dlink = DLinkHalf::news(wr, rx_data);
+    let mut dlink = DLinkHalf::news(&cfg, pid, wr, &mut rx_data);
 
     {
         let action_u = ulink.run(watch_rx.clone());
         let action_d = dlink.run(watch_rx.clone());
-    
+
+        let mut done_u = false;
+        let mut done_d = false;    
+
         tokio::pin!(action_u);
         tokio::pin!(action_d);
-    
-        let mut done_u = false;
-        let mut done_d = false;
+
         select! {
             _ = &mut action_u =>{done_u = true;}
             _ = &mut action_d =>{done_d = true;}
         }
-    
+
         let _ = watch_tx.send(1);
-    
-        if !done_u {
-            action_u.await;
-        }
-    
+
         if !done_d {
             action_d.await;
-        }
-    }
+        } 
 
+        if !done_u{
+            action_u.await;
+        }
+
+    }
 
     let _=tx.send(SessionEvent::Xfer{ts:xrs::time::now_millis(), ibytes:ulink.ibytes, obytes:dlink.obytes}).await;
     let _ = tx.send(SessionEvent::Finished{pid}).await;
 }
 
 
-
-
-
-// async fn session_entry_hub(pid:u32, mut socket : TcpStream, cfg : Arc<Config>, tx: mpsc::Sender<SessionEvent>, rx_data : & mut mpsc::Receiver<BcastEvent>, hub : &Arc<Hub>){
-//     let mut socket_in_traffic = Traffic::default();
-//     let mut socket_out_traffic = Traffic::default();
-//     let mut channel_in_traffic = Traffic::default();
-//     let mut channel_out_traffic = Traffic::default();
-
-//     let mut ibytes:u32 = 0;
-//     let mut obytes:u32 = 0;
-
-//     let mut in_buf1 = BytesMut::with_capacity(cfg.length);
-//     let mut in_buf2 = Bytes::new();
-    
-//     let mut out_buf = Bytes::new();
-    
-//     let (mut rd, mut wr) = socket.split();
-//     let mut next_report_time = Instant::now() + Duration::from_millis(SPEED_REPORT_INTERVAL);
-
-//     loop {
-//         //info!("aaa <{}> loop, out_buf.remaining {}, in_buf2.remaining {}, in_buf1.len {}, cfg.length {}", pid, out_buf.remaining(), in_buf2.remaining(), in_buf1.len(), cfg.length);
-        
-//         // if in_buf2.remaining() == 0 && in_buf1.len() == cfg.length{
-//         //     in_buf2 = in_buf1.freeze();
-//         //     in_buf1 = BytesMut::with_capacity(cfg.length);
-//         // }
-        
-
-//         tokio::select! {
-
-//             r = rd.read_buf(&mut in_buf1), if in_buf1.len() < cfg.length => {
-//                 match r {
-//                     Ok(n) => {
-//                         socket_in_traffic.bytes += n as u64;
-//                         if in_buf1.len() == cfg.length {
-//                             socket_in_traffic.packets += 1;
-//                         }
-//                         // info!("aaa <{}> read socket ok, n={}, socket_in_traffic {:?}", pid, n, socket_in_traffic);
-
-//                         if n == 0 {
-//                             break;
-//                         }
-
-//                         //trace!("read bytes {}", n);
-//                         ibytes += n as u32;
-                        
-//                         // if in_buf1.len() == cfg.length && in_buf2.remaining() == 0{
-//                         //     in_buf2 = in_buf1.freeze();
-//                         //     in_buf1 = BytesMut::with_capacity(cfg.length);
-//                         // }
-
-//                     },
-//                     Err(e) => {
-//                         debug!("failed to read socket, error=[{}]", e);
-//                         break;
-//                     },
-//                 }
-//             }
-
-//             // _ = hub.broadcast(pid, BcastEvent::Data {buf:in_buf2}), if in_buf2.remaining() > 0 => {
-//             //     channel_out_traffic.packets += 1;
-//             //     channel_out_traffic.bytes += in_buf2.remaining() as u64;
-
-//             //     // info!("aaa <{}> broadcast channel ok, channel_out_traffic {:?}", pid, channel_out_traffic);
-//             //     //in_buf2.advance(in_buf2.remaining());
-//             //     in_buf2 = Bytes::new();
-//             // }
-
-            // r = rx_data.recv(), if out_buf.remaining() == 0 => {
-            //     match r {
-            //         Some(ev) => {
-            //             match ev{
-            //                 BcastEvent::Data { buf } => {
-            //                     //trace!("from broadcast bytes {}", buf.remaining());
-            //                     out_buf = buf;
-
-            //                     channel_in_traffic.packets += 1;
-            //                     channel_in_traffic.bytes += out_buf.remaining() as u64;
-            //                     // info!("aaa <{}> recv channel ok, channel_in_traffic {:?}", pid, channel_in_traffic);
-            //                 },
-            //                 BcastEvent::Nothing => {}
-            //             }
-            //         },
-            //         None => {
-            //             error!("recv broadcast data but got None");
-            //             break;
-            //         },
-            //     }
-            // }
-
-//             r = wr.write_buf(&mut out_buf), if out_buf.remaining() > 0 => {
-//                 match r {
-//                     Ok(n) => {
-//                         socket_out_traffic.bytes += n as u64;
-//                         if out_buf.remaining() == 0 {
-//                             socket_out_traffic.packets += 1;
-//                         }
-
-//                         // info!("aaa <{}> write socket ok, n={}, socket_out_traffic {:?}", pid, n, socket_out_traffic);
-//                         //trace!("written bytes {}", n);
-//                         obytes += n as u32;
-//                     },
-//                     Err(e) => {
-//                         debug!("failed to write socket, error=[{}]", e);
-//                         break;
-//                     },
-//                 }
-//             }
-
-//             _ = time::sleep_until(next_report_time) => {
-//                 // info!("aaa <{}> sleep done", pid);
-//                 if ibytes > 0 || obytes > 0 {
-//                     let _=tx.send(SessionEvent::Xfer{ts:xrs::time::now_millis(), ibytes, obytes}).await;
-//                     ibytes = 0;
-//                     obytes = 0;
-//                 }
-//                 next_report_time = Instant::now() + Duration::from_millis(SPEED_REPORT_INTERVAL);
-//             }
-//         };
-
-//         {
-
-//             let action = hub.broadcast(pid, BcastEvent::Data {buf:Bytes::new()});
-//             tokio::pin!(action);
-//             tokio::select! {
-//                 _  = &mut action =>{
-        
-//                 }
-//             };
-//             test_future(action).await;
-
-//         }
-
-
-//         if in_buf1.len() == cfg.length {
-//             hub.broadcast(pid, BcastEvent::Data {buf:in_buf1.freeze()}).await;
-//             channel_out_traffic.packets += 1;
-//             channel_out_traffic.bytes += cfg.length as u64;
-
-//             in_buf1 = BytesMut::with_capacity(cfg.length);
-//         }
-
-//     }
-
-//     if ibytes > 0 || obytes > 0 {
-//         let _=tx.send(SessionEvent::Xfer{ts:xrs::time::now_millis(), ibytes, obytes}).await;
-//     }
-
-//     let _=tx.send(SessionEvent::Finished{pid}).await;
-// }
-
-fn spawn_tasks_hub(pid:u32, socket : TcpStream, cfg0 : &Arc<Config>, tx0: &mpsc::Sender<SessionEvent>, mut rx_data : mpsc::Receiver<BcastEvent>, hub : Arc<Hub>){
+fn spawn_tasks_hub(pid:u32, socket : TcpStream, cfg0 : &Arc<Config>, tx0: &mpsc::Sender<SessionEvent>, rx_data : mpsc::Receiver<BcastEvent>, hub : Arc<Hub>){
     let cfg = cfg0.clone();
     let tx = tx0.clone();
     tokio::spawn(async move {
-        session_run(pid, socket, cfg, tx, &mut rx_data, &hub).await;
-        //let session = Session::new(pid, socket, cfg, tx, &mut rx_data, &hub);
-        //session_entry_hub2(session).await;
-        //session_entry_hub2(pid, socket, cfg, tx, &mut rx_data, &hub).await;
+        session_run(pid, socket, cfg, tx, rx_data, &hub).await;
         hub.remove(pid).await;
+        //info!("pid {}: aaa final", pid);
+        
     });
 }
 
-
-//#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
-#[tokio::main]
-async fn main() -> core::result::Result<(), Box<dyn std::error::Error>> {
-
-    xrs::tracing_subscriber::init_simple_milli();
-
-    let cfg0 = Config::parse();
-    info!("cfg={:?}", cfg0);
-    let cfg0 = Arc::new(cfg0);
-    
-
+async fn run_me(cfg0 : Arc<Config>) -> core::result::Result<(), Box<dyn std::error::Error>>{
     let listener = TcpListener::bind(&cfg0.address).await?;
     info!("tcp fanout server listening on {}", cfg0.address);
 
@@ -780,5 +655,77 @@ async fn main() -> core::result::Result<(), Box<dyn std::error::Error>> {
             }
         };
     }
+}
+
+
+async fn test_mpsc_throughput(){
+    enum ChEvent {
+        Data { packet : Bytes},
+        Length { packet_len : usize},
+    }
+
+    xrs::tracing_subscriber::init_simple_milli();
+
+    let packet_len = 51200;
+    let max_packets:u64 = 1*1000*1000*2 ;
+
+    // let mut packet = Cursor::new(vec![0u8; packet_len]);
+    //let mut buf = BytesMut::with_capacity(packet_len);
+    let packet = Bytes::from(vec![0u8; packet_len]);
+
+    let (tx, mut rx) = mpsc::channel(16);
+    let handle= tokio::spawn(async move {
+        let mut npkt:u64 = 0;
+        let time = Instant::now();
+        while npkt < max_packets {
+            let pkt = rx.recv().await;
+            if pkt.is_none(){
+                break;
+            }
+            npkt +=1;
+        }
+        let ms = time.elapsed().as_millis() as u64;
+        info!("recv packets {}, elapsed {} ms, {} q/s, {} MB/s",
+            npkt, ms, 
+            1000*npkt as u64/ms,
+            1000*npkt*packet_len as u64/ms/1000/1000);
+    });
+
+    let mut npkt = 0;
+    let time = Instant::now();
+    while npkt < max_packets {
+        // let r = tx.send(ChEvent::Data{packet:packet.clone()}).await;
+        let r = tx.send(ChEvent::Length{packet_len}).await;
+        if r.is_err(){
+            break;
+        }
+        npkt +=1;
+    }
+    let ms = time.elapsed().as_millis() as u64;
+    info!("send packets {}, elapsed {} ms, {} q/s, {} MB/s",
+            npkt, ms, 
+            1000*npkt as u64/ms,
+            1000*npkt*packet_len as u64/ms/1000/1000);
+    let _ = handle.await;
+    exit(0);
+}
+
+
+//#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::main]
+pub async fn main()  {
+    //test_mpsc_throughput().await;
+
+    xrs::tracing_subscriber::init_simple_milli();
+
+    let cfg0 = Config::parse();
+    info!("cfg={:?}", cfg0);
+    if cfg0.length > cfg0.buf_size {
+        error!("packet lenght large than buffer size");
+        <Config as clap::IntoApp>::into_app().print_help().unwrap();
+        return ;
+    }
+    
+    let _ = run_me(Arc::new(cfg0)).await;
 }
 
