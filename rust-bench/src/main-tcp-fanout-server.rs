@@ -6,6 +6,12 @@
 //      cargo run --release --bin tcp-bench -- -a 127.0.0.1:7000 -c 1000 -s 300 -t 99999 -l 1000
 //      cargo run --release --bin tcp-bench -- -c 2 -t 999999 -l 1000 -p 500
 
+// -- throughput  (5.12 Gbps, 40,000,000 q/s)
+//      cargo run --release --bin tcp-fanout-server -- -a 0.0.0.0:7000 -l 16000 -b 16000
+//      cargo run --release --bin tcp-bench -- -a 192.168.1.182:7000 -c 2500 -s 10000 -l 16000 -t 9999999
+//      cargo run --release --bin tcp-bench -- -a 192.168.1.182:7000 -c 1 -l 16 -p 9999999 -t 99999999 -q 16000
+//      2500*16000*16*8/1000/1000 = 5,120 Mbps = 5.12 Gbps
+
 
 mod xrs;
 use xrs::speed::Speed;
@@ -23,7 +29,6 @@ use tokio::time::{self, Instant};
 use tracing::{error, info, debug};
 
 use std::collections::HashMap;
-use std::process::exit;
 use std::sync::Arc;
 use std::{time::Duration};
 use clap::{Clap};
@@ -60,7 +65,7 @@ struct Config{
     #[clap(short='l', long, default_value = "512", long_about="packet length")]
     length: usize,
 
-    #[clap(short='b', long="buffer", default_value = "1024", long_about="buffer size")]
+    #[clap(short='b', long="buffer", default_value = "0", long_about="buffer size. it is same as length if 0.")]
     buf_size: usize,
 
     #[clap(short='m', long, default_value = "hub", long_about="mode [hub, broadcast].")]
@@ -495,7 +500,7 @@ impl<'a> DLinkHalf<'a> {
     async fn run(&mut self, mut watch_rx0 : watch::Receiver<i32>) {
         let mut pending_packet= Bytes::new();
         let mut out_buf = BytesMut::with_capacity(self.cfg.buf_size); 
-        let mut out_packet = Bytes::new();; 
+        let mut out_packet = Bytes::new();
         
         loop {
             if pending_packet.remaining() > 0 && out_buf.len() < self.cfg.buf_size{
@@ -659,74 +664,30 @@ async fn run_me(cfg0 : Arc<Config>) -> core::result::Result<(), Box<dyn std::err
 }
 
 
-async fn test_mpsc_throughput(){
-    enum ChEvent {
-        Data { packet : Bytes},
-        Length { packet_len : usize},
-    }
-
-    xrs::tracing_subscriber::init_simple_milli();
-
-    let packet_len = 51200;
-    let max_packets:u64 = 1*1000*1000*2 ;
-
-    // let mut packet = Cursor::new(vec![0u8; packet_len]);
-    //let mut buf = BytesMut::with_capacity(packet_len);
-    let packet = Bytes::from(vec![0u8; packet_len]);
-
-    let (tx, mut rx) = mpsc::channel(16);
-    let handle= tokio::spawn(async move {
-        let mut npkt:u64 = 0;
-        let time = Instant::now();
-        while npkt < max_packets {
-            let pkt = rx.recv().await;
-            if pkt.is_none(){
-                break;
-            }
-            npkt +=1;
-        }
-        let ms = time.elapsed().as_millis() as u64;
-        info!("recv packets {}, elapsed {} ms, {} q/s, {} MB/s",
-            npkt, ms, 
-            1000*npkt as u64/ms,
-            1000*npkt*packet_len as u64/ms/1000/1000);
-    });
-
-    let mut npkt = 0;
-    let time = Instant::now();
-    while npkt < max_packets {
-        // let r = tx.send(ChEvent::Data{packet:packet.clone()}).await;
-        let r = tx.send(ChEvent::Length{packet_len}).await;
-        if r.is_err(){
-            break;
-        }
-        npkt +=1;
-    }
-    let ms = time.elapsed().as_millis() as u64;
-    info!("send packets {}, elapsed {} ms, {} q/s, {} MB/s",
-            npkt, ms, 
-            1000*npkt as u64/ms,
-            1000*npkt*packet_len as u64/ms/1000/1000);
-    let _ = handle.await;
-    exit(0);
-}
-
-
 //#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 #[tokio::main]
-pub async fn main()  {
-    //test_mpsc_throughput().await;
-
+pub async fn main() {
     xrs::tracing_subscriber::init_simple_milli();
 
-    let cfg0 = Config::parse();
-    info!("cfg={:?}", cfg0);
-    if cfg0.length > cfg0.buf_size {
+    let mut cfg = Config::parse();
+    info!("cfg={:?}", cfg);
+    
+    if cfg.buf_size == 0 {
+        cfg.buf_size = cfg.length;
+    }
+
+    if cfg.length > cfg.buf_size {
         error!("packet lenght large than buffer size");
         <Config as clap::IntoApp>::into_app().print_help().unwrap();
         return ;
     }
     
-    let _ = run_me(Arc::new(cfg0)).await;
+    if cfg.length == 0 {
+        error!("invalid packet lenght 0");
+        <Config as clap::IntoApp>::into_app().print_help().unwrap();
+        return ;
+    }
+    
+    let _ = run_me(Arc::new(cfg)).await;
 }
 
