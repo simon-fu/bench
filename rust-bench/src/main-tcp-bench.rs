@@ -11,6 +11,7 @@ use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use std::u64;
 
 use tokio::io::{Result, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -20,7 +21,7 @@ use tokio::time::Instant;
 
 use tracing::{info, debug, error};
 
-use bytes::{Buf, BytesMut};
+use bytes::{BytesMut};
 use clap::{Clap, IntoApp};
 
 
@@ -31,13 +32,16 @@ use clap::{Clap, IntoApp};
 #[clap(name="tcp bench", author, about, version)]
 struct Config{
     #[clap(short='l', long, default_value = "512", long_about="Packet length.")]
-    length: usize, 
+    length: u64, 
+
+    #[clap(short='b', long="buffer", default_value = "0", long_about="buffer size. it is same as length if 0.")]
+    buf_size: u64,
 
     #[clap(short='t', long, default_value = "60", long_about="Duration in seconds.")]
     duration: u64, 
 
     #[clap(short='c', long, default_value = "50", long_about="Connection number.")]
-    number: u32, 
+    connections: u64, 
 
     #[clap(short='a', long, default_value = "127.0.0.1:7000", long_about="Target server address.")]
     address: String, 
@@ -170,7 +174,7 @@ impl  MasterState {
                 self.recv_speed.add(*ts, &data.input);
                 self.check_xfer(ts);
                 if (self.xfer.output.packets > 0)
-                    && (self.xfer.output.packets == (self.config.packets * self.config.number as u64))
+                    && (self.xfer.output.packets == (self.config.packets * self.config.connections))
                     && (self.xfer.input.packets >= self.xfer.output.packets) {
                     //let _ = watch_tx.send(HubEvent::ExitReq);
                     self.finished = true;
@@ -240,7 +244,7 @@ impl  MasterState {
             self.max_conn_speed = average;
         }
         info!("Connections: ok {}, fail {}, broken {}, total {}, average {} c/s, max {} c/s", 
-            self.conn_ok_count, self.conn_fail_count, self.conn_broken_count, self.config.number, average, self.max_conn_speed
+            self.conn_ok_count, self.conn_fail_count, self.conn_broken_count, self.config.connections, average, self.max_conn_speed
         );
     }
 
@@ -258,7 +262,7 @@ impl  MasterState {
         info!("");
         info!("");
         
-        info!("Tasks      : spawn {}, finished {}, total {}", self.spawn_session_count, self.finish_session_count, self.config.number);
+        info!("Tasks      : spawn {}, finished {}, total {}", self.spawn_session_count, self.finish_session_count, self.config.connections);
         
         info!("Connections: ok {}, fail {}, broken {}, max {} c/s", 
             self.conn_ok_count, self.conn_fail_count, self.conn_broken_count, self.max_conn_speed
@@ -314,8 +318,8 @@ struct Session{
     cfg0 : Arc<Config>,
     tx0 : mpsc::Sender<SessionEvent>, 
     state : SessionState,
-    output_packets :  u64,
-    input_packets  :  u64,
+    output_bytes :  u64,
+    input_bytes  :  u64,
 }
 
 impl Session {
@@ -325,11 +329,11 @@ impl Session {
             tx0: tx.clone(),
             state: SessionState{
                 stream: None,
-                out_buf: Cursor::new(vec![0; cfg.length]),
-                in_buf : BytesMut::with_capacity(cfg.length),
+                out_buf: Cursor::new(vec![0; cfg.buf_size as usize]),
+                in_buf : BytesMut::with_capacity(cfg.buf_size as usize),
             },
-            output_packets : 0,
-            input_packets : 0,
+            output_bytes : 0,
+            input_bytes : 0,
         }
     }
 }
@@ -345,77 +349,26 @@ async fn session_watch(watch_rx0 : &mut watch::Receiver<HubEvent>, state : &mut 
     }
 }
 
-async fn session_read<'a>(rd : &mut tokio::net::tcp::ReadHalf<'a>, in_buf:&mut BytesMut, capcity:usize) -> Result<bool>{
-    let result = rd.read_buf(in_buf).await;
-    match result {
-        Ok(n) => {
-            if n == 0 {
-                return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "connection closed by peer"));
-            }
 
-            if in_buf.len() == capcity {
-                unsafe {
-                    in_buf.set_len(0);
-                }
-                return Ok(true);
-            }
-        },
-        Err(e) => {
-            return Err(e);
-        },
-    }
-    return Ok(false);
-}
+fn calc_report(
+    packet_len : &u64,
 
-async fn session_write<'a>(wr : &mut tokio::net::tcp::WriteHalf<'a>, out_buf:&mut Cursor<Vec<u8>>) -> Result<bool>{
-    let result =  wr.write_buf(out_buf).await;
-    match result {
-        Ok(_) => {
-            if out_buf.remaining() == 0 {
-                out_buf.set_position(0);
-                return Ok(true);
-            }
-        },
-        Err(e) => {
-            return Err(e);
-        },
-    }
-    return Ok(false);
-}
+    input_bytes : &u64, 
+    output_bytes : &u64, 
+    
+    report_input_bytes : &mut u64, 
+    report_output_bytes : &mut u64, 
 
-async fn session_read_remains(session : &mut Session, batch_xfer : &mut Transfer) -> Result<()>{
+    batch_xfer : &mut Transfer)  {
+        
+    batch_xfer.input.packets = (input_bytes - *report_input_bytes) / packet_len;
+    batch_xfer.output.packets = (output_bytes - *report_output_bytes) / packet_len;
 
-    let deadline = Instant::now() + Duration::from_secs(25);
-    let (mut rd, _) = session.state.stream.as_mut().unwrap().split();
-    //debug!("before reading remains, output {}, input {}, remains {}", 
-    //    session.output_packets, session.input_pacekts, session.output_packets-session.input_pacekts);
-    while session.input_packets  < session.output_packets{
-        tokio::select! {
-            r = session_read(&mut rd, &mut session.state.in_buf, session.cfg0.length) => { 
-                match r {
-                    Ok(done) => {
-                        if done {
-                            batch_xfer.input.add(1, session.cfg0.length as u64);
-                            session.input_packets += 1;
-                        }
-                    },
-                    Err(e) => {
-                        error!("reading remains but broken with error [{}]", e);
-                        return Err(e);
-                    },
-                }
-            }
+    batch_xfer.input.bytes = batch_xfer.input.packets * packet_len;
+    batch_xfer.output.bytes = batch_xfer.output.packets * packet_len;
 
-            _ = time::sleep_until(deadline) => {
-                error!("reading remains timeout");
-                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "reading remains timeout"));
-            }
-        } // select
-    }
-    //session.input_packets += batch_xfer.input.packets;
-    //debug!("after reading remains, output {}, input {}, remains {}", 
-    //    session.output_packets, session.input_pacekts, session.output_packets-session.input_pacekts);
-    return Ok(());
+    *report_input_bytes += batch_xfer.input.bytes;
+    *report_output_bytes += batch_xfer.output.bytes;
 }
 
 async fn session_xfer(session : &mut Session, watch_rx0 : &mut watch::Receiver<HubEvent>, watch_state:&mut HubEvent) -> Result<()>{    
@@ -426,21 +379,41 @@ async fn session_xfer(session : &mut Session, watch_rx0 : &mut watch::Receiver<H
     let mut result:Result<()> = Ok(());
     let writing_pacer = Pacer::new(session.cfg0.qps as u64);
     let enable_writing = session.cfg0.qps > 0 || session.cfg0.packets > 0;
+    let max_output_bytes = session.cfg0.packets * session.cfg0.length;
+    let mut report_output_bytes = 0u64;
+    let mut report_input_bytes = 0u64;
 
     while matches!(watch_state, HubEvent::KickXfer) { 
-        if enable_writing && session.output_packets >= session.cfg0.packets {
+
+        let remaining_bytes = max_output_bytes - session.output_bytes;
+
+        if max_output_bytes > 0 && remaining_bytes == 0 && session.input_bytes == session.output_bytes {
             break;
         }
 
-        let wait_millis = writing_pacer.get_wait_milli(session.output_packets);
+        if remaining_bytes < session.cfg0.buf_size {
+            session.state.out_buf.set_position(session.cfg0.buf_size - remaining_bytes);
+        } else {
+            session.state.out_buf.set_position(0);
+        }
+
+        let wait_millis = writing_pacer.get_wait_milli(session.output_bytes/session.cfg0.length);
+        
+        let is_writing = enable_writing && remaining_bytes > 0 && wait_millis <= 0;
+
         tokio::select! {
 
-            r = session_read(&mut rd, &mut session.state.in_buf, session.cfg0.length) => { 
+            r = rd.read_buf(&mut session.state.in_buf) => {
                 match r {
-                    Ok(done) => {
-                        if done {
-                            batch_xfer.input.add(1, session.cfg0.length as u64);
-                            session.input_packets += 1;
+                    Ok(n) => {
+                        if n == 0 {
+                            result = Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "connection closed by peer"));
+                            break;
+                        }
+                        session.input_bytes += n as u64;
+
+                        unsafe {
+                            session.state.in_buf.set_len(0);
                         }
                     },
                     Err(e) => {
@@ -451,30 +424,35 @@ async fn session_xfer(session : &mut Session, watch_rx0 : &mut watch::Receiver<H
                 }
             }
 
-            r = session_write(&mut wr, &mut session.state.out_buf), if enable_writing && wait_millis <= 0 => { 
+            r =  wr.write_buf(&mut session.state.out_buf), if is_writing =>{
                 match r {
-                    Ok(done) => {
-                        if done {
-                            batch_xfer.output.add(1, session.cfg0.length as u64);
-                            session.output_packets += 1;
-                        }
+                    Ok(n) => {
+                        session.output_bytes += n as u64;
                     },
                     Err(e) => {
-                        error!("writing but broken with error [{}]", e);
+                        error!("reading but broken with error [{}]", e);
                         result = Err(e);
                         break;
                     },
                 }
             }
 
+
             _ = time::sleep(Duration::from_millis(wait_millis as u64)), if enable_writing && wait_millis > 0 =>{
 
             }
 
             _ = time::sleep_until(next_time) => {
-                if batch_xfer.input.bytes > 0 || batch_xfer.output.bytes > 0 {
+                //info!("==== report: ibytes {}, obytes {}", session.input_bytes, session.output_bytes);
+                calc_report(&session.cfg0.length, 
+                    &session.input_bytes, &session.output_bytes,
+                    &mut report_input_bytes, &mut report_output_bytes, &mut batch_xfer);
+
+                if batch_xfer.input.packets > 0 || batch_xfer.output.packets > 0 {
+                    // info!(" report {:?}", batch_xfer);
                     let _ = session.tx0.send(SessionEvent::Xfer { ts: xrs::time::now_millis(), data:batch_xfer}).await;
                     batch_xfer.clear();
+                    
                 }
                 next_time = Instant::now() + Duration::from_millis(100);
             }
@@ -484,9 +462,14 @@ async fn session_xfer(session : &mut Session, watch_rx0 : &mut watch::Receiver<H
         
     }
 
-    if result.is_ok() && !matches!(watch_state, HubEvent::ExitReq) {
-        result = session_read_remains(session, &mut batch_xfer).await;
-    }
+    // if result.is_ok() && !matches!(watch_state, HubEvent::ExitReq) {
+    //     result = session_read_remains(session, &mut batch_xfer).await;
+    // }
+
+    // info!("send last report");
+    calc_report(&session.cfg0.length, 
+        &session.input_bytes, &session.output_bytes,
+        &mut report_input_bytes, &mut report_output_bytes, &mut batch_xfer);
 
     let _ = session.tx0.send(SessionEvent::Xfer { ts: xrs::time::now_millis(), data:batch_xfer }).await;
     batch_xfer.clear();
@@ -564,7 +547,7 @@ async fn session_entry(mut session : Session, mut watch_rx0 : watch::Receiver<Hu
 
 async fn bench(cfg : Arc<Config>){
 
-    debug!("try spawn {} task...", cfg.number);
+    debug!("try spawn {} task...", cfg.connections);
     
     let (tx, mut rx) = mpsc::channel(1024);
     let (watch_tx, watch_rx) = watch::channel(HubEvent::Ready);
@@ -577,7 +560,7 @@ async fn bench(cfg : Arc<Config>){
     let mut is_finished = false;
     let kick_time = Instant::now();
     
-    for n in 0..cfg.number {
+    for n in 0..cfg.connections {
         let session = Session::new(&cfg, &tx);
         let watch_rx0 = watch_rx.clone();
         state.spawn_session_count += 1;
@@ -587,7 +570,7 @@ async fn bench(cfg : Arc<Config>){
         });
         
         loop {
-            let expect = 1000 * n / cfg.speed;
+            let expect = 1000 * n / cfg.speed as u64;
             let diff = expect as i64 - kick_time.elapsed().as_millis() as i64;
             if diff <= 0{
                 break;
@@ -678,6 +661,22 @@ pub async fn main() {
         }
     }
 
+    if cfg.buf_size == 0 {
+        cfg.buf_size = cfg.length;
+    }
+
+    if cfg.length > cfg.buf_size {
+        error!("invalid packet lenght, it large than buffer size");
+        <Config as clap::IntoApp>::into_app().print_help().unwrap();
+        return ;
+    }
+
+    if cfg.length == 0 {
+        error!("invalid packet lenght 0");
+        <Config as clap::IntoApp>::into_app().print_help().unwrap();
+        return ;
+    }
+
     {
         let addr = cfg.address.parse::<SocketAddr>();
         if addr.is_err() {            
@@ -691,7 +690,7 @@ pub async fn main() {
     info!("Benchmarking: {}", cfg.address);
     info!(
         "{} clients, {} c/s, running {} bytes, {} sec.",
-        cfg.number, cfg.speed, cfg.length,  cfg.duration
+        cfg.connections, cfg.speed, cfg.length,  cfg.duration
     );
     info!("");
 
