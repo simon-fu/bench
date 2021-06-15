@@ -8,9 +8,10 @@
 
 // -- throughput  (5.12 Gbps, 40,000,000 q/s)
 //      cargo run --release --bin tcp-fanout-server -- -a 0.0.0.0:7000 -l 16000 -b 16000
-//      cargo run --release --bin tcp-bench -- -a 192.168.1.182:7000 -c 2500 -s 10000 -l 16000 -t 9999999
+//      cargo run --release --bin tcp-bench -- -a 192.168.1.182:7000 -c 2500 -s 10000 -l 16 -b 16000 -t 9999999
 //      cargo run --release --bin tcp-bench -- -a 192.168.1.182:7000 -c 1 -l 16 -p 9999999 -t 99999999 -q 16000
-//      2500*16000*16*8/1000/1000 = 5,120 Mbps = 5.12 Gbps
+//      qps = 2500*16000 = 40,000,000
+//      bw = 2500*16000*16*8/1000/1000 = 5,120 Mbps = 5.12 Gbps
 
 
 mod xrs;
@@ -687,7 +688,7 @@ pub async fn main() {
         <Config as clap::IntoApp>::into_app().print_help().unwrap();
         return ;
     }
-    
+
     let _ = run_me(Arc::new(cfg)).await;
 }
 
