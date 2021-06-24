@@ -612,6 +612,9 @@ async fn bench(cfg : Arc<Config>){
     }
 
     if !is_finished && state.conn_ok_count > 0{
+        info!("press Enter to kick sending");
+        let _ = std::io::Read::read(&mut std::io::stdin(), &mut [0u8]).unwrap();
+        
         debug!("broadcast kick-xfer");
         state.start_xfer_ts = xrs::time::now_millis();
         let _ = watch_tx.send(HubEvent::KickXfer);
