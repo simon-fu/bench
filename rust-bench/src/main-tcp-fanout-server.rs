@@ -473,7 +473,7 @@ impl<'a> ULinkHalf<'a> {
 
 struct DLinkHalf<'a>{
     cfg : &'a Arc<Config>,
-    pid : u32,
+    _pid : u32,
     wr : tokio::net::tcp::WriteHalf<'a>,
     rx_data : &'a mut mpsc::Receiver<BcastEvent>,
     ibytes : u64,
@@ -483,14 +483,14 @@ struct DLinkHalf<'a>{
 impl<'a> DLinkHalf<'a> {
     fn news(
         cfg : &'a Arc<Config>,
-        pid : u32,
+        _pid : u32,
         wr : tokio::net::tcp::WriteHalf<'a>,
         rx_data : &'a mut mpsc::Receiver<BcastEvent>,
     ) -> Self {
 
         DLinkHalf{
             cfg,
-            pid,
+            _pid,
             wr,
             rx_data,
             ibytes: 0,
