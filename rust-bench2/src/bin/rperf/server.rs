@@ -23,9 +23,9 @@ pub async fn run_as_server(args: &ServerArgs) -> Result<()> {
     .with_context(||format!("fail to bind at [{}]", bind))?;
 
     loop {
-        info!("-----------------------------------------------------------");
+        info!("-------------------------------------------------");
         info!("Server listening on {}", listener.local_addr().with_context(||"no local addr")?);
-        info!("-----------------------------------------------------------");
+        info!("-------------------------------------------------");
 
         let (socket, remote) = listener.accept().await.with_context(||"fail to accept")?;
         info!("Accepted connection from {}", remote);

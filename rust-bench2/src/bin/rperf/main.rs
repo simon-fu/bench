@@ -1,12 +1,11 @@
 
-use std::str::FromStr;
 
 use anyhow::{Result, Context, bail};
 use clap::Parser;
 use client::{ClientArgs, run_as_client};
 use server::{ServerArgs, run_as_server};
 use tracing::{info, error};
-use tracing_subscriber::EnvFilter;
+// use tracing_subscriber::EnvFilter;
 
 mod server;
 mod client;
@@ -97,13 +96,13 @@ async fn main() -> Result<()> {
 
     const FILTER: &str = "warn,rperf=info"; 
 
-    let env_filter = match std::env::var_os(EnvFilter::DEFAULT_ENV) {
-        Some(_v) => EnvFilter::from_default_env(),
-        None => EnvFilter::from_str(FILTER)?,
-    };
+    // let env_filter = match std::env::var_os(EnvFilter::DEFAULT_ENV) {
+    //     Some(_v) => EnvFilter::from_default_env(),
+    //     None => EnvFilter::from_str(FILTER)?,
+    // };
 
     tracing_subscriber::fmt()
-    .with_env_filter(env_filter)
+    // .with_env_filter(env_filter)
     .with_target(false)
     .init();
 
