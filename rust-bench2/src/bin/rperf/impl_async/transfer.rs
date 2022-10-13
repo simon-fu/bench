@@ -2,18 +2,12 @@ use std::time::{Instant, Duration};
 use anyhow::{Result, bail};
 use bytes::{BytesMut, Buf};
 use rust_bench::util::traffic::{TrafficSpeed, Traffic};
-use crate::{packet::HandshakeRequest, async_rt::async_tcp::{AsyncReadBuf, AsyncTcpStream}};
+use crate::{packet::{HandshakeRequest, self, PacketType, Header, BufPair}, async_rt::async_tcp::{AsyncReadBuf, AsyncTcpStream}};
 
-use super::packet::{self, PacketType, Header};
+
 use tracing::info;
 
 
-
-#[derive(Default)]
-pub struct BufPair {
-    pub ibuf: BytesMut,
-    pub obuf: BytesMut,
-}
 
 
 pub async fn xfer_sending<S>(socket: &mut S, buf2: &mut BufPair, hreq: &HandshakeRequest) -> Result<()> 

@@ -1,9 +1,16 @@
-use bytes::{Buf, BufMut};
+use bytes::{Buf, BufMut, BytesMut};
 use serde_derive::{Serialize, Deserialize};
 use anyhow::{Result, bail};
 
 const HEADER_LEN: usize = 5;
 pub const VERSION: u8 = 1;
+
+#[derive(Default)]
+pub struct BufPair {
+    pub ibuf: BytesMut,
+    pub obuf: BytesMut,
+}
+
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HandshakeRequest {
@@ -60,28 +67,74 @@ impl TryFrom<i32> for PacketType {
 
 pub struct Header {
     pub ptype: u8, 
-    pub offset: usize, 
-    pub len: usize,
+    pub offset: usize,  // payload offset
+    pub len: usize,     // payload length
+}
+
+pub fn is_completed2((data1, data2): (&[u8], &[u8])) -> Option<Header> {
+    
+    let total_len = data1.len() + data2.len();
+
+    if total_len < HEADER_LEN {
+        return None
+    }
+
+    if data1.len() >= HEADER_LEN {
+        return check_completed(data1, total_len)
+    }
+
+    let mut buf = [0_u8; HEADER_LEN];
+    if data1.len() > 0 {
+        buf[..data1.len()].clone_from_slice(&data1);
+    }
+    
+    let remains = HEADER_LEN - data1.len();
+
+    buf[data1.len()..].clone_from_slice(&data2[0..remains]);
+
+    check_completed(&buf, total_len)
+
 }
 
 pub fn is_completed(data: &[u8]) -> Option<Header> {
     if data.len() < HEADER_LEN {
         return None
     }
-    let mut buf = data;
+
+    check_completed(data, data.len())
+
+    // let mut buf = data;
+    // let itype = buf.get_u8() as u8;
+    // let len = buf.get_u32() as usize;
+    // if buf.len() < len {
+    //     return None
+    // }
+
+    // // let ptype: PacketType = itype.try_into().map_err(|_e|anyhow!("unknown packet type {}", itype))?;
+    // Some(Header {
+    //     ptype: itype,
+    //     offset: HEADER_LEN,
+    //     len,
+    // })
+}
+
+
+
+fn check_completed(header: &[u8], total_len: usize) -> Option<Header> {
+    let mut buf = header;
     let itype = buf.get_u8() as u8;
     let len = buf.get_u32() as usize;
-    if buf.len() < len {
-        return None
+    if total_len < (HEADER_LEN + len) {
+        None
+    } else {
+        Some(Header {
+            ptype: itype,
+            offset: HEADER_LEN,
+            len,
+        })
     }
-    
-    // let ptype: PacketType = itype.try_into().map_err(|_e|anyhow!("unknown packet type {}", itype))?;
-    Some(Header {
-        ptype: itype,
-        offset: HEADER_LEN,
-        len,
-    })
 }
+
 
 pub fn encode_json<T, B>(ptype: PacketType, value: &T, buf: &mut B) -> Result<()>
 where

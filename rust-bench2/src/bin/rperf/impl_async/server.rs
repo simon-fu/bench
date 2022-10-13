@@ -1,17 +1,14 @@
 
 use anyhow::{Result, Context, bail};
 use bytes::Buf;
-use super::{packet::{self, PacketType, HandshakeRequest, HandshakeResponse, HandshakeResponseCode}};
+use crate::{args::ServerArgs, async_rt::async_tcp::{AsyncTcpListener, AsyncTcpStream}, packet::BufPair};
+
+use super::{super::{packet::{self, PacketType, HandshakeRequest, HandshakeResponse, HandshakeResponseCode}}, transfer::{read_specific_packet, xfer_recving, xfer_sending}};
 use tracing::info;
 
-use crate::{CommonArgs, transfer::{read_specific_packet, BufPair, xfer_recving, xfer_sending}, async_rt::async_tcp::{AsyncTcpStream, AsyncTcpListener}};
 
 
 
-#[derive(Debug, Clone)]
-pub struct ServerArgs {
-    pub common: CommonArgs
-}
 
 pub async fn run_as_server<L>(args: &ServerArgs) -> Result<()> 
 where

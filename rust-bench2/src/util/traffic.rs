@@ -200,7 +200,7 @@ impl TrafficSpeed {
         }
         let r = SpeedPair{
             qps:    (t.packets - self.traffic.packets) * 1000 / d,
-            bandwidth: (t.bytes - self.traffic.bytes) * 1000 / d,
+            bandwidth: (t.bytes - self.traffic.bytes) * 8 * 1000 / d,
         };
 
         self.traffic.packets = t.packets;
