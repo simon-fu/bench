@@ -10,6 +10,7 @@ pub struct HandshakeRequest {
     pub ver: u8,
     pub is_reverse: bool,
     pub data_len: usize,
+    pub secs: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

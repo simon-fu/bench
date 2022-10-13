@@ -1,23 +1,37 @@
 
+/*
+    - case1: when packet length = 128k (default) 
+        iperf3: cpu 50%, bandwidth 12Gb/s
+        tokio : cpu 80%, bandwidth 1.8Gb/s 
+        diff  : 1.8/12=15%, or 12/1.8=6.66x
+
+    - case2: when packet length = 1000
+        iperf3: cpu 100%, bandwidth 3Gb/s
+        tokio : cpu 100%, bandwidth 760Mb/s 
+        diff  : 0.760/3=25%, or 3/0.760=3.94x
+*/
+#![feature(type_alias_impl_trait)]
 
 use anyhow::{Result, Context, bail};
 use clap::Parser;
 use client::{ClientArgs, run_as_client};
 use server::{ServerArgs, run_as_server};
+use tokio::net::{TcpStream, TcpListener};
 use tracing::{info, error};
 // use tracing_subscriber::EnvFilter;
 
 mod server;
 mod client;
-mod common;
+mod transfer;
 mod packet;
+mod async_rt;
+
 
 #[derive(Parser, Debug, Clone)]
 #[clap(name = "rperf", author, about)]
 pub struct Args {
     #[clap(short = 's', long = "server", long_help = "run in server mode")]
     is_server: bool,
-    // -s, --server              run in server mode
 
     #[clap(short = 'c', long = "client", long_help = "run in client mode, connecting to <host>")]
     host: Option<String>,
@@ -37,8 +51,8 @@ pub struct Args {
     #[clap(long = "cport", long_help = "bind to a specific client port (TCP and UDP, default: ephemeral port)")]
     cport: Option<u16>,
 
-    // #[clap(short = 't', long = "time", long_help = "time in seconds to transmit for", default_value = "10")]
-    // secs: u64,
+    #[clap(short = 't', long = "time", long_help = "time in seconds to transmit for", default_value = "10")]
+    secs: u64,
 
     // #[clap(short = 'i', long = "interval", long_help = "seconds between periodic bandwidth reports", default_value = "1")]
     // interval: u64,
@@ -71,7 +85,7 @@ impl Args {
                 is_reverse: self.is_reverse,
                 len: self.len(),
                 cport: self.cport.unwrap_or_else(||0),
-                // secs: self.secs,
+                secs: self.secs,
             })),
             None => Ok(None),
         }
@@ -94,15 +108,8 @@ impl Args {
 async fn main() -> Result<()> {
     let args = Args::parse(); 
 
-    const FILTER: &str = "warn,rperf=info"; 
-
-    // let env_filter = match std::env::var_os(EnvFilter::DEFAULT_ENV) {
-    //     Some(_v) => EnvFilter::from_default_env(),
-    //     None => EnvFilter::from_str(FILTER)?,
-    // };
-
     tracing_subscriber::fmt()
-    // .with_env_filter(env_filter)
+    .without_time()
     .with_target(false)
     .init();
 
@@ -126,9 +133,13 @@ async fn run_me(args: &Args) -> Result<()> {
     if client_args.is_some() && server_args.is_some() {
         bail!("cannot be both server and client");
     } else if let Some(client_args) = client_args {
-        run_as_client(&client_args).await
+        tokio::spawn(async move {
+            run_as_client::<TcpStream>(&client_args).await
+        }).await?
     } else if let Some(server_args) = server_args {
-        run_as_server(&server_args).await
+        tokio::spawn(async move {
+            run_as_server::<TcpListener>(&server_args).await
+        }).await?
     } else {
         bail!("parameter error - must either be a client (-c) or server (-s)");
     }

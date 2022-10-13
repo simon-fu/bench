@@ -1,10 +1,12 @@
-use std::time::Instant;
+use std::time::{Instant, Duration};
 use anyhow::{Result, bail};
 use bytes::{BytesMut, Buf};
 use rust_bench::util::traffic::{TrafficSpeed, Traffic};
+use crate::{packet::HandshakeRequest, async_rt::async_tcp::{AsyncReadBuf, AsyncTcpStream}};
+
 use super::packet::{self, PacketType, Header};
-use tokio::{net::TcpStream, io::{AsyncWriteExt, AsyncReadExt}};
 use tracing::info;
+
 
 
 #[derive(Default)]
@@ -14,28 +16,39 @@ pub struct BufPair {
 }
 
 
-pub async fn xfer_sending(socket: &mut TcpStream, buf2: &mut BufPair, data_len: usize, ) -> Result<()> { 
+pub async fn xfer_sending<S>(socket: &mut S, buf2: &mut BufPair, hreq: &HandshakeRequest) -> Result<()> 
+where
+    S: AsyncTcpStream,
+{ 
     let mut speed = TrafficSpeed::default();
     let mut traffic = Traffic::default();
     
-    let data = vec![0_u8; data_len];
-
-    loop {
+    let data = vec![0_u8; hreq.data_len];
+    let start = Instant::now();
+    let duration = Duration::from_secs(hreq.secs);
+    while start.elapsed() < duration{
         packet::encode_data(PacketType::Data, &data, &mut buf2.obuf)?;
-        socket.write_buf(&mut buf2.obuf).await?;
+        socket.async_write_buf(&mut buf2.obuf).await?;
 
-        // socket.write_all_buf(&mut buf2.obuf).await?;
-        // socket.flush().await?;
-
-        traffic.inc(data_len as u64);
+        traffic.inc(hreq.data_len as u64);
 
         if let Some(r) = speed.check_speed(Instant::now(), &traffic) {
             info!( "send speed: [{}]", r.human());
         }
     }
+    packet::encode_data(PacketType::Data, &[], &mut buf2.obuf)?;
+    socket.async_write_all_buf(&mut buf2.obuf).await?;
+    socket.async_flush().await?;
+    socket.async_readable().await?;
+    
+
+    Ok(())
 }
 
-pub async fn xfer_recving(socket: &mut TcpStream, buf2: &mut BufPair,) -> Result<()> { 
+pub async fn xfer_recving<S>(socket: &mut S, buf2: &mut BufPair,) -> Result<()> 
+where
+    S: AsyncTcpStream,
+{ 
     let mut speed = TrafficSpeed::default();
     let mut traffic = Traffic::default();
 
@@ -45,6 +58,12 @@ pub async fn xfer_recving(socket: &mut TcpStream, buf2: &mut BufPair,) -> Result
         let len = header.offset+header.len;
         match header.ptype {
             x if x == PacketType::Data as u8 => {
+                buf2.ibuf.advance(len);
+                
+                if header.len == 0 {
+                    break;
+                }
+
                 traffic.inc(len as u64);
                 if let Some(r) = speed.check_speed(Instant::now(), &traffic) {
                     info!( "recv speed: [{}]", r.human());
@@ -52,13 +71,16 @@ pub async fn xfer_recving(socket: &mut TcpStream, buf2: &mut BufPair,) -> Result
             },
             _ => bail!("xfering but got packet type {}", header.ptype),
         } 
-        buf2.ibuf.advance(len);
-
     }
+
+    Ok(())
 
 }
 
-pub async fn read_specific_packet<R: AsyncReadExt+Unpin>(reader: &mut R, ptype: PacketType, buf: &mut BytesMut) -> Result<Header> {
+pub async fn read_specific_packet<R>(reader: &mut R, ptype: PacketType, buf: &mut BytesMut) -> Result<Header> 
+where
+    R: Unpin + AsyncReadBuf,
+{
     let r = read_packet(reader, buf).await?;
 
     if r.ptype != ptype as u8 {
@@ -67,7 +89,10 @@ pub async fn read_specific_packet<R: AsyncReadExt+Unpin>(reader: &mut R, ptype: 
     Ok(r)
 }
 
-pub async fn read_packet<R: AsyncReadExt+Unpin>(reader: &mut R, buf: &mut BytesMut) -> Result<Header> {
+pub async fn read_packet<S>(reader: &mut S, buf: &mut BytesMut) -> Result<Header> 
+where
+    S: Unpin + AsyncReadBuf,
+{
     loop {
         let r = packet::is_completed(buf);
         match r {
@@ -77,7 +102,7 @@ pub async fn read_packet<R: AsyncReadExt+Unpin>(reader: &mut R, buf: &mut BytesM
             None => {},
         }
         
-        let n = reader.read_buf(buf).await?;
+        let n = reader.async_read_buf(buf).await?;
         if n == 0 {
             bail!("connection disconnected")
         }
