@@ -5,12 +5,14 @@ use tokio::net::{TcpStream, lookup_host, TcpSocket, ToSocketAddrs, TcpListener};
 use std::future::Future;
 use std::io::Result;
 use std::net::SocketAddr;
-use super::async_tcp::{AsyncReadBuf, AsyncWriteBuf, AsyncWriteAllBuf, AsyncFlush, AsyncReadable, AsyncBindAndConnect, GetLocalAddr, AsyncShutdown, AsyncTcpStream, AsyncListen, AsyncAccept, AsyncTcpListener};
+use super::async_tcp::{AsyncReadBuf, AsyncWriteBuf, AsyncWriteAllBuf, AsyncFlush, AsyncBindAndConnect, GetLocalAddr, AsyncShutdown, AsyncTcpStream2, AsyncListen, AsyncAccept2, AsyncTcpListener2};
 
 
 impl AsyncReadBuf for TcpStream {
     type Fut<'a>
     = impl Future< Output = Result<usize> > where Self: 'a;
+
+    type Buf = BytesMut;
 
     #[inline]
     fn async_read_buf<'a>(&'a mut self, buf: &'a mut BytesMut) -> Self::Fut<'_>
@@ -24,9 +26,11 @@ impl AsyncReadBuf for TcpStream {
 impl AsyncWriteBuf for TcpStream {
     type Fut<'a>
     = impl Future< Output = Result<usize> > where Self: 'a;
+    
+    type Buf = BytesMut;
 
     #[inline]
-    fn async_write_buf<'a>(&'a mut self, buf: &'a mut BytesMut) -> Self::Fut<'_>
+    fn async_write_buf<'a>(&'a mut self, buf: &'a mut Self::Buf) -> Self::Fut<'_>
     where
         Self: Sized + Unpin
     {
@@ -38,8 +42,10 @@ impl AsyncWriteAllBuf for TcpStream {
     type Fut<'a>
     = impl Future< Output = Result<()> > where Self: 'a;
 
+    type Buf = BytesMut;
+
     #[inline]
-    fn async_write_all_buf<'a>(&'a mut self, buf: &'a mut BytesMut) -> Self::Fut<'_>
+    fn async_write_all_buf<'a>(&'a mut self, buf: &'a mut Self::Buf) -> Self::Fut<'_>
     where
         Self: Sized + Unpin
     {
@@ -60,18 +66,18 @@ impl AsyncFlush for TcpStream {
     }
 }
 
-impl AsyncReadable for TcpStream {
-    type Fut<'a>
-    = impl Future< Output = Result<()> > where Self: 'a;
+// impl AsyncReadable for TcpStream {
+//     type Fut<'a>
+//     = impl Future< Output = Result<()> > where Self: 'a;
 
-    #[inline]
-    fn async_readable<'a>(&'a mut self) -> Self::Fut<'_>
-    where
-        Self: Sized + Unpin
-    {
-        self.readable()
-    }
-}
+//     #[inline]
+//     fn async_readable<'a>(&'a mut self) -> Self::Fut<'_>
+//     where
+//         Self: Sized + Unpin
+//     {
+//         self.readable()
+//     }
+// }
 
 impl AsyncShutdown for TcpStream {
     type Fut<'a>
@@ -125,7 +131,7 @@ impl GetLocalAddr for TcpStream {
     }
 }
 
-impl AsyncTcpStream for TcpStream {}
+impl AsyncTcpStream2<BytesMut, BytesMut> for TcpStream {}
 
 
 
@@ -142,7 +148,7 @@ impl AsyncListen for TcpListener {
     }
 }
 
-impl AsyncAccept for TcpListener {
+impl AsyncAccept2<BytesMut, BytesMut> for TcpListener {
     type Stream = TcpStream;
     type Fut<'a>
     = impl Future< Output = Result<(Self::Stream, SocketAddr)> > where Self: 'a;
@@ -163,5 +169,5 @@ impl GetLocalAddr for TcpListener {
 }
 
 
-impl AsyncTcpListener for TcpListener {}
+impl AsyncTcpListener2<BytesMut, BytesMut> for TcpListener {}
 

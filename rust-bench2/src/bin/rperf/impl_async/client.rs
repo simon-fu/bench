@@ -2,16 +2,20 @@
 
 use std::net::SocketAddr;
 use anyhow::{Result, Context, bail};
-use bytes::Buf;
+use bytes::{Buf, BytesMut};
 use tracing::info;
-use crate::{args::ClientArgs, async_rt::async_tcp::AsyncTcpStream, packet::{HandshakeRequest, self, PacketType, HandshakeResponse, BufPair}};
+use crate::{args::ClientArgs, async_rt::async_tcp::{AsyncTcpStream2}, packet::{HandshakeRequest, self, PacketType, HandshakeResponse, BufPair}};
 use super::transfer::{read_specific_packet, xfer_sending, xfer_recving};
 
 
 
 pub async fn run_as_client<S>(args: &ClientArgs) -> Result<()> 
 where
-    S: AsyncTcpStream,
+    S: AsyncTcpStream2<BytesMut>,
+    // S: AsyncTcpStream,
+    // S: AsyncReadBuf<Buf = BytesMut>,
+    // S: AsyncWriteAllBuf<Buf = BytesMut>,
+    // S: AsyncWriteBuf<Buf = BytesMut>,
 {
     let target_addr = format!("{}:{}", args.host, args.common.server_port);
 

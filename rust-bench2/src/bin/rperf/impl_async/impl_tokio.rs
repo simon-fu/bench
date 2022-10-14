@@ -26,7 +26,7 @@ pub fn run_tokio_server(args: ServerArgs) -> Result<()> {
 
     rt.block_on(async {
         tokio::spawn(async move {
-            run_as_server::<TcpListener>(&args).await
+            run_as_server::<TcpListener, TcpStream>(&args).await
         }).await?
     })?;
 

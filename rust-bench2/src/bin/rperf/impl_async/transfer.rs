@@ -1,18 +1,17 @@
 use std::time::{Instant, Duration};
 use anyhow::{Result, bail};
-use bytes::{BytesMut, Buf};
+use bytes::{BytesMut, Buf, BufMut};
 use rust_bench::util::traffic::{TrafficSpeed, Traffic};
-use crate::{packet::{HandshakeRequest, self, PacketType, Header, BufPair}, async_rt::async_tcp::{AsyncReadBuf, AsyncTcpStream}};
+use crate::{packet::{HandshakeRequest, self, PacketType, Header, BufPair}, async_rt::async_tcp::{AsyncReadBuf, AsyncTcpStream2}};
 
 
 use tracing::info;
 
 
 
-
 pub async fn xfer_sending<S>(socket: &mut S, buf2: &mut BufPair, hreq: &HandshakeRequest) -> Result<()> 
 where
-    S: AsyncTcpStream,
+    S: AsyncTcpStream2<BytesMut>,
 { 
     let mut speed = TrafficSpeed::default();
     let mut traffic = Traffic::default();
@@ -33,7 +32,7 @@ where
     packet::encode_data(PacketType::Data, &[], &mut buf2.obuf)?;
     socket.async_write_all_buf(&mut buf2.obuf).await?;
     socket.async_flush().await?;
-    socket.async_readable().await?;
+    // socket.async_readable().await?;
     
 
     Ok(())
@@ -41,7 +40,7 @@ where
 
 pub async fn xfer_recving<S>(socket: &mut S, buf2: &mut BufPair,) -> Result<()> 
 where
-    S: AsyncTcpStream,
+    S: AsyncTcpStream2<BytesMut>,
 { 
     let mut speed = TrafficSpeed::default();
     let mut traffic = Traffic::default();
@@ -71,9 +70,10 @@ where
 
 }
 
-pub async fn read_specific_packet<R>(reader: &mut R, ptype: PacketType, buf: &mut BytesMut) -> Result<Header> 
+pub async fn read_specific_packet<S, B>(reader: &mut S, ptype: PacketType, buf: &mut B) -> Result<Header> 
 where
-    R: Unpin + AsyncReadBuf,
+    S: Unpin + AsyncReadBuf<Buf = B>,
+    B: BufMut + Buf,
 {
     let r = read_packet(reader, buf).await?;
 
@@ -83,12 +83,13 @@ where
     Ok(r)
 }
 
-pub async fn read_packet<S>(reader: &mut S, buf: &mut BytesMut) -> Result<Header> 
+pub async fn read_packet<S, B>(reader: &mut S, buf: &mut B) -> Result<Header> 
 where
-    S: Unpin + AsyncReadBuf,
+    S: Unpin + AsyncReadBuf<Buf = B>,
+    B: BufMut + Buf,
 {
     loop {
-        let r = packet::is_completed(buf);
+        let r = packet::is_completed(buf.chunk());
         match r {
             Some(r) => {
                 return Ok(r)

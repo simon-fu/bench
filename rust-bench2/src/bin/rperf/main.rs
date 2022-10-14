@@ -1,14 +1,21 @@
 
 /*
+    Bench result:
     - case1: when packet length = 128k (default) 
-        iperf3: cpu 50%, bandwidth 12Gb/s
-        tokio : cpu 80%, bandwidth 1.8Gb/s 
-        diff  : 1.8/12=15%, or 12/1.8=6.66x
+        iperf3: cpu 41%, bandwidth 11.3Gb/s
+        tokio : cpu 55%, bandwidth 11.3Gb/s 
+        diff  : cpu +14%, bandwidth 0Gb/s%
 
     - case2: when packet length = 1000
-        iperf3: cpu 100%, bandwidth 3Gb/s
-        tokio : cpu 100%, bandwidth 760Mb/s 
-        diff  : 0.760/3=25%, or 3/0.760=3.94x
+        iperf3: cpu  68%, bandwidth 3.0Gb/s
+        tokio : cpu 100%, bandwidth 4.1Gb/s 
+        diff  : cpu +32%, bandwidth +1.1Gb/s
+    
+    TODO:
+    - support async std
+    - support smol
+    - support UDP
+    - support interval
 */
 
 #![feature(type_alias_impl_trait)]

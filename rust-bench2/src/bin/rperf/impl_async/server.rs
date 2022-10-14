@@ -1,7 +1,7 @@
 
 use anyhow::{Result, Context, bail};
-use bytes::Buf;
-use crate::{args::ServerArgs, async_rt::async_tcp::{AsyncTcpListener, AsyncTcpStream}, packet::BufPair};
+use bytes::{Buf, BytesMut};
+use crate::{args::ServerArgs, async_rt::async_tcp::{AsyncTcpListener2, AsyncTcpStream2}, packet::BufPair};
 
 use super::{super::{packet::{self, PacketType, HandshakeRequest, HandshakeResponse, HandshakeResponseCode}}, transfer::{read_specific_packet, xfer_recving, xfer_sending}};
 use tracing::info;
@@ -10,9 +10,9 @@ use tracing::info;
 
 
 
-pub async fn run_as_server<L>(args: &ServerArgs) -> Result<()> 
+pub async fn run_as_server<L, S>(args: &ServerArgs) -> Result<()> 
 where
-    L: AsyncTcpListener
+    L: AsyncTcpListener2<BytesMut>,
 { 
 
     let bind = args.common.bind.as_deref().unwrap_or_else(||"0.0.0.0");
@@ -53,7 +53,7 @@ where
 
 async fn service_session<S>(socket: &mut S, buf2: &mut BufPair) -> Result<()> 
 where
-    S: AsyncTcpStream,
+    S: AsyncTcpStream2<BytesMut>,
 {
 
     let header = read_specific_packet(socket, PacketType::HandshakeRequest, &mut buf2.ibuf).await?;
