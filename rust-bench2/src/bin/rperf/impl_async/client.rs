@@ -3,8 +3,9 @@
 use std::net::SocketAddr;
 use anyhow::{Result, Context, bail};
 use bytes::{Buf, BytesMut};
+use rust_bench::util::async_rt::async_tcp::AsyncTcpStream2;
 use tracing::info;
-use crate::{args::ClientArgs, async_rt::async_tcp::{AsyncTcpStream2}, packet::{HandshakeRequest, self, PacketType, HandshakeResponse, BufPair}};
+use crate::{args::ClientArgs, packet::{HandshakeRequest, self, PacketType, HandshakeResponse, BufPair}};
 use super::transfer::{read_specific_packet, xfer_sending, xfer_recving};
 
 

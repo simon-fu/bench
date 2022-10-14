@@ -1,8 +1,8 @@
 use std::time::{Instant, Duration};
 use anyhow::{Result, bail};
 use bytes::{BytesMut, Buf, BufMut};
-use rust_bench::util::traffic::{TrafficSpeed, Traffic};
-use crate::{packet::{HandshakeRequest, self, PacketType, Header, BufPair}, async_rt::async_tcp::{AsyncReadBuf, AsyncTcpStream2}};
+use rust_bench::util::{traffic::{TrafficSpeed, Traffic}, async_rt::async_tcp::{AsyncTcpStream2, AsyncReadBuf}};
+use crate::packet::{HandshakeRequest, self, PacketType, Header, BufPair};
 
 
 use tracing::info;

@@ -27,7 +27,6 @@ use tracing::{info, error};
 
 mod args;
 mod packet;
-pub mod async_rt;
 mod impl_async;
 mod impl_std;
 
