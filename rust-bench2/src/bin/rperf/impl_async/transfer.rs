@@ -1,7 +1,7 @@
 use std::time::{Instant, Duration};
 use anyhow::{Result, bail};
 use bytes::{BytesMut, Buf, BufMut};
-use rust_bench::util::{traffic::{TrafficSpeed, Traffic}, async_rt::async_tcp::{AsyncTcpStream2, AsyncReadBuf}};
+use rust_bench::util::{traffic::{TrafficEstimator, Traffic, ToHuman}, async_rt::async_tcp::{AsyncTcpStream2, AsyncReadBuf}};
 use crate::packet::{HandshakeRequest, self, PacketType, Header, BufPair};
 
 
@@ -13,7 +13,7 @@ pub async fn xfer_sending<S>(socket: &mut S, buf2: &mut BufPair, hreq: &Handshak
 where
     S: AsyncTcpStream2<BytesMut>,
 { 
-    let mut speed = TrafficSpeed::default();
+    let mut estimator = TrafficEstimator::default();
     let mut traffic = Traffic::default();
     
     let data = vec![0_u8; hreq.data_len];
@@ -23,10 +23,10 @@ where
         packet::encode_data(PacketType::Data, &data, &mut buf2.obuf)?;
         socket.async_write_buf(&mut buf2.obuf).await?;
 
-        traffic.inc(hreq.data_len as u64);
+        traffic.inc_traffic(hreq.data_len as i64);
 
-        if let Some(r) = speed.check_speed(Instant::now(), &traffic) {
-            info!( "send speed: [{}]", r.human());
+        if let Some(r) = estimator.estimate(Instant::now(), &traffic) {
+            info!( "send rate: [{}]", r.to_human());
         }
     }
     packet::encode_data(PacketType::Data, &[], &mut buf2.obuf)?;
@@ -42,7 +42,7 @@ pub async fn xfer_recving<S>(socket: &mut S, buf2: &mut BufPair,) -> Result<()>
 where
     S: AsyncTcpStream2<BytesMut>,
 { 
-    let mut speed = TrafficSpeed::default();
+    let mut estimator = TrafficEstimator::default();
     let mut traffic = Traffic::default();
 
     loop {
@@ -57,9 +57,9 @@ where
                     break;
                 }
 
-                traffic.inc(len as u64);
-                if let Some(r) = speed.check_speed(Instant::now(), &traffic) {
-                    info!( "recv speed: [{}]", r.human());
+                traffic.inc_traffic(len as i64);
+                if let Some(r) = estimator.estimate(Instant::now(), &traffic) {
+                    info!( "recv rate: [{}]", r.to_human());
                 }
             },
             _ => bail!("xfering but got packet type {}", header.ptype),

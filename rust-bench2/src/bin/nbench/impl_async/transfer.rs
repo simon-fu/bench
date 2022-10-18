@@ -1,0 +1,155 @@
+use std::time::{Instant, Duration};
+use anyhow::{Result, bail};
+use bytes::{BytesMut, Buf, BufMut};
+use rust_bench::util::{traffic::AtomicTraffic, async_rt::{async_tcp::{AsyncTcpStream2, AsyncReadBuf}}};
+use crate::packet::{HandshakeRequest, self, PacketType, Header, BufPair};
+
+
+pub async fn xfer_sending<S>(socket: &mut S, buf2: &mut BufPair, hreq: &HandshakeRequest, traffic: &AtomicTraffic) -> Result<()> 
+where
+    S: AsyncTcpStream2<BytesMut>,
+{ 
+    // let mut estimator = TrafficEstimator::default();
+    // let mut traffic = Traffic::default();
+
+    let data = vec![0_u8; hreq.data_len];
+    let start = Instant::now();
+    let duration = Duration::from_secs(hreq.secs);
+    while start.elapsed() < duration{
+        packet::encode_data(PacketType::Data, &data, &mut buf2.obuf)?;
+        socket.async_write_buf(&mut buf2.obuf).await?;
+
+        traffic.inc_traffic(hreq.data_len as i64);
+
+        // if let Some(r) = estimator.estimate(Instant::now(), &traffic) {
+        //     info!( "send rate: [{}]", r.to_human());
+        // }
+    }
+    packet::encode_data(PacketType::Data, &[], &mut buf2.obuf)?;
+    socket.async_write_all_buf(&mut buf2.obuf).await?;
+    socket.async_flush().await?;
+    // socket.async_readable().await?;
+    
+
+    Ok(())
+}
+
+pub async fn xfer_recving<S>(socket: &mut S, buf2: &mut BufPair, traffic: &AtomicTraffic) -> Result<()> 
+where
+    S: AsyncTcpStream2<BytesMut>,
+{ 
+    // let mut estimator = TrafficEstimator::default();
+    // let mut traffic = Traffic::default();
+
+    loop {
+        let header = read_packet(socket, &mut buf2.ibuf).await?;
+
+        let len = header.offset+header.len;
+        match header.ptype {
+            x if x == PacketType::Data as u8 => {
+                buf2.ibuf.advance(len);
+                
+                if header.len == 0 {
+                    break;
+                }
+
+                traffic.inc_traffic(len as i64);
+                // if let Some(r) = estimator.estimate(Instant::now(), &traffic) {
+                //     info!( "recv rate: [{}]", r.to_human());
+                // }
+            },
+            _ => bail!("xfering but got packet type {}", header.ptype),
+        } 
+    }
+
+    Ok(())
+
+}
+
+pub async fn read_specific_packet<S, B>(reader: &mut S, ptype: PacketType, buf: &mut B) -> Result<Header> 
+where
+    S: Unpin + AsyncReadBuf<Buf = B>,
+    B: BufMut + Buf,
+{
+    let r = read_packet(reader, buf).await?;
+
+    if r.ptype != ptype as u8 {
+        bail!("expect packet type [{:?}({})], but [{}]", ptype, ptype as u8, r.ptype)
+    }
+    Ok(r)
+}
+
+pub async fn read_packet<S, B>(reader: &mut S, buf: &mut B) -> Result<Header> 
+where
+    S: Unpin + AsyncReadBuf<Buf = B>,
+    B: BufMut + Buf,
+{
+    loop {
+        let r = packet::is_completed(buf.chunk());
+        match r {
+            Some(r) => {
+                return Ok(r)
+            },
+            None => {},
+        }
+        
+        let n = reader.async_read_buf(buf).await?;
+        if n == 0 {
+            bail!("connection disconnected")
+        }
+    }
+}
+
+// pub mod conns_state {
+//     use std::sync::atomic::Ordering;
+
+//     use rust_bench::util::{atomic_count::conn_count::{ConnCount, ConnSnapshot}, traffic::{AtomicTraffic, Traffic, TrafficRate, TrafficOp}, interval::{GetRateState, CalcRate}};
+
+//     struct ConnsStati {
+//         conns: ConnCount,
+//         traffic: AtomicTraffic, 
+//     }
+    
+//     impl GetRateState for ConnsStati {
+//         type Output = RateState;
+//         fn get_rate_state(&self) -> Self::Output { 
+//             RateState {
+//                 conns: self.conns.snapshot(),
+//                 traffic: self.traffic.get_traffic(),
+//             }
+//         }
+//     }
+    
+//     const ORDERING: Ordering = Ordering::Relaxed;
+    
+//     struct RateState {
+//         conns: ConnSnapshot,
+//         traffic: Traffic,
+//     }
+    
+//     #[derive(Debug, Clone, Copy, Default)]
+//     struct Rate {
+//         conns: ConnSnapshot,
+//         traffic: TrafficRate,
+//     }
+    
+//     impl CalcRate for RateState {
+//         type Delta = RateState;
+//         type Rate = Rate;
+    
+//         fn calc_rate(&self, delta: &Self::Delta, duration: std::time::Duration) -> Self::Rate  {
+//             let conns = self.conns.calc_rate(&delta.conns, duration);
+//             Rate {
+//                 conns,
+//                 traffic: self.traffic.calc_rate(&delta.traffic, duration),
+//             }
+//         }
+    
+//         fn calc_delta_only(&self, new_state: &Self) -> Self::Delta  {
+//             RateState {
+//                 conns: self.conns.calc_delta_only(&new_state.conns),
+//                 traffic: self.traffic.calc_delta_only(&new_state.traffic),
+//             }
+//         }
+//     }
+// }

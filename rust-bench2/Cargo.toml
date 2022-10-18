@@ -7,14 +7,18 @@ edition = "2021"
 
 [dependencies]
 # clap = { version = "=3.0.7", features = ["derive"] }
-clap = { version = "=4.0.13", features = ["derive"] }
+clap = { version = "=4.0.15", features = ["derive"] }
 
 tokio = { version = "=1.21.2", features = ["full"] }
 tokio-util = {version = "=0.7.4", features = ["full"]}
 tokio-stream = { version = "=0.1.11", features = ["sync"] }
 
-# futures = "=0.3.24"
+futures = "=0.3.24"
+parking_lot = "=0.12.1"
 num_cpus = "=1.13.1"
+num-format = "=0.4.3"
+# init_with = "=1.1.0"
+array-init = "=2.0.1"
 
 anyhow = "=1.0.65"
 bytes = "=1.2.1"

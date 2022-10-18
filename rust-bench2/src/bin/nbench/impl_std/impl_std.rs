@@ -5,7 +5,7 @@
 use std::{net::{TcpStream, Shutdown, TcpListener, SocketAddr}, io::{Write, Read}, time::{Instant, Duration}, collections::VecDeque};
 use anyhow::{Result, Context, bail};
 use bytes::{BytesMut, Buf};
-use rust_bench::util::{traffic::{TrafficEstimator, Traffic, ToHuman}};
+use rust_bench::util::{traffic::{TrafficEstimator, Traffic, ToHuman}, now_millis};
 use tracing::info;
 use crate::{args::{ClientArgs, ServerArgs}, packet::{HandshakeRequest, self, PacketType, HandshakeResponse, Header, HandshakeResponseCode}};
 
@@ -61,15 +61,8 @@ pub struct VecBuf {
 }
 
 impl VecBuf {
-    // pub fn as_reader<'a>(&'a mut self) -> Slice2<'a> { 
-    //     Slice2::from(self.as_slice())
-    // }
-
-    pub fn as_reader<'a>(&'a mut self, limit: usize) -> Slice2<'a> { 
-        let (s1, s2) = self.as_slice();
-        let len1 = limit.min(s1.len());
-        let len2 = (limit-len1).min(s2.len());
-        Slice2::from((&s1[0..len1], &s2[0..len2]))
+    pub fn as_reader<'a>(&'a mut self) -> Slice2<'a> { 
+        Slice2::from(self.as_slice())
     }
 
     pub fn remains(&self) -> usize { 
@@ -126,23 +119,21 @@ pub struct BufPair {
 pub fn run_as_client(args: &ClientArgs) -> Result<()> 
 {
 
-    let target_addr = format!("{}:{}", args.host, args.common.server_port);
-
     // let bind_addr: SocketAddr = format!("{}:{}", args.common.bind.as_deref().unwrap_or_else(||"0.0.0.0"), args.cport).parse()?; 
 
-    info!("Connecting to [{}]...", target_addr);
+    info!("Connecting to [{}]...", args.target);
+    let mut socket = TcpStream::connect(&args.target)?;
     
-    let mut socket = TcpStream::connect(&target_addr)?;
-    
-    info!("local [{}] connected to [{}]", socket.local_addr()?, target_addr);
+    info!("local [{}] connected to [{}]", socket.local_addr()?, &args.target);
 
     let mut buf2 = BufPair::default();
 
     let hreq = HandshakeRequest {
         ver: packet::VERSION,
         is_reverse: args.is_reverse,
-        data_len: args.len,
+        data_len: args.packet_len(),
         secs: args.secs,
+        timestamp: now_millis(),
     };
 
     packet::encode_json(PacketType::HandshakeRequest, &hreq, &mut buf2.obuf)?;
@@ -151,16 +142,18 @@ pub fn run_as_client(args: &ClientArgs) -> Result<()>
 
     let header = read_specific_packet(&mut socket, PacketType::HandshakeResponse, &mut buf2.ibuf)?;
 
+    // let data = &buf2.ibuf.as_ref()[header.offset..header.offset+header.len];
+    // let rsp: HandshakeResponse = serde_json::from_slice(data).with_context(||"invalid handshake request")?;
+    // buf2.ibuf.advance(header.offset+header.len);
+
     buf2.ibuf.advance(header.offset);
-    let rsp: HandshakeResponse = serde_json::from_reader(buf2.ibuf.as_reader(header.len))?;
+    let rsp: HandshakeResponse = serde_json::from_reader(buf2.ibuf.as_reader())?;
     buf2.ibuf.advance(header.len);
     
     if rsp.ver != packet::VERSION {
         bail!("expect version [{}] but [{}]", packet::VERSION, rsp.ver);
     }
     
-    info!("hanshake done");
-
     if !args.is_reverse {
         xfer_sending(&mut socket, &mut buf2, &hreq)?;
     } else {
@@ -178,13 +171,12 @@ pub fn run_as_client(args: &ClientArgs) -> Result<()>
 pub fn run_as_server(args: &ServerArgs) -> Result<()> 
 { 
 
-    let bind = args.common.bind.as_deref().unwrap_or_else(||"0.0.0.0");
-    let bind = format!("{}:{}", bind, args.common.server_port);
-    let bind: SocketAddr = bind.parse()?;
+    let bind: SocketAddr = args.bind.parse()?;
     let listener = TcpListener::bind(bind)
     .with_context(||format!("fail to bind at [{}]", bind))?;
 
     let mut num = 0_u64;
+    let mut cid = 0_u64;
 
     loop {
         num += 1;
@@ -196,8 +188,9 @@ pub fn run_as_server(args: &ServerArgs) -> Result<()>
         info!("Accepted connection from [{}]", remote);
 
         let mut buf2 = BufPair::default();
+        cid += 1;
 
-        let r = service_session(&mut socket, &mut buf2);
+        let r = service_session(&mut socket, &mut buf2, cid);
         match r {
             Ok(_r) => {
             },
@@ -210,13 +203,14 @@ pub fn run_as_server(args: &ServerArgs) -> Result<()>
 
 }
 
-fn service_session(socket: &mut TcpStream, buf2: &mut BufPair) -> Result<()> 
+fn service_session(socket: &mut TcpStream, buf2: &mut BufPair, cid: u64) -> Result<()> 
 {
     let header = read_specific_packet(socket, PacketType::HandshakeRequest, &mut buf2.ibuf)?;
 
     buf2.ibuf.advance(header.offset);
-    let hreq: HandshakeRequest = serde_json::from_reader(buf2.ibuf.as_reader(header.len)).with_context(||"parsing hreq")?;
+    let hreq: HandshakeRequest = serde_json::from_reader(buf2.ibuf.as_reader()).with_context(||"parsing hreq")?;
     buf2.ibuf.advance(header.len);
+    let timestamp = now_millis();
     
     if hreq.ver != packet::VERSION {
         packet::encode_json(
@@ -224,6 +218,8 @@ fn service_session(socket: &mut TcpStream, buf2: &mut BufPair) -> Result<()>
             &HandshakeResponse {
                 ver: packet::VERSION,
                 code: HandshakeResponseCode::VersionNotMatch as u8,
+                timestamp,
+                cid,
             }, 
             &mut buf2.obuf
         )?;
@@ -237,6 +233,8 @@ fn service_session(socket: &mut TcpStream, buf2: &mut BufPair) -> Result<()>
         &HandshakeResponse {
             ver: packet::VERSION,
             code: HandshakeResponseCode::Success as u8,
+            timestamp,
+            cid,
         }, 
         &mut buf2.obuf
     )?;

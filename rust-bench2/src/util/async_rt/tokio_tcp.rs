@@ -2,10 +2,12 @@
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, lookup_host, TcpSocket, ToSocketAddrs, TcpListener};
+use tokio::task::JoinHandle;
 use std::future::Future;
 use std::io::Result;
 use std::net::SocketAddr;
-use super::async_tcp::{AsyncReadBuf, AsyncWriteBuf, AsyncWriteAllBuf, AsyncFlush, AsyncBindAndConnect, GetLocalAddr, AsyncShutdown, AsyncTcpStream2, AsyncListen, AsyncAccept2, AsyncTcpListener2};
+use std::time::Duration;
+use super::async_tcp::{AsyncReadBuf, AsyncWriteBuf, AsyncWriteAllBuf, AsyncFlush, AsyncBindAndConnect, GetLocalAddr, AsyncShutdown, AsyncTcpStream2, AsyncListen, AsyncAccept2, AsyncTcpListener2, VRuntime, AsyncSleep, AsyncReadable};
 
 
 impl AsyncReadBuf for TcpStream {
@@ -66,18 +68,18 @@ impl AsyncFlush for TcpStream {
     }
 }
 
-// impl AsyncReadable for TcpStream {
-//     type Fut<'a>
-//     = impl Future< Output = Result<()> > where Self: 'a;
+impl AsyncReadable for TcpStream {
+    type Fut<'a>
+    = impl Future< Output = Result<()> > where Self: 'a;
 
-//     #[inline]
-//     fn async_readable<'a>(&'a mut self) -> Self::Fut<'_>
-//     where
-//         Self: Sized + Unpin
-//     {
-//         self.readable()
-//     }
-// }
+    #[inline]
+    fn async_readable<'a>(&'a mut self) -> Self::Fut<'_>
+    where
+        Self: Sized + Unpin
+    {
+        self.readable()
+    }
+}
 
 impl AsyncShutdown for TcpStream {
     type Fut<'a>
@@ -171,3 +173,25 @@ impl GetLocalAddr for TcpListener {
 
 impl AsyncTcpListener2<BytesMut, BytesMut> for TcpListener {}
 
+pub struct VRuntimeTokio;
+
+impl AsyncSleep for VRuntimeTokio {
+    type Fut = tokio::time::Sleep;
+
+    fn async_sleep(duration: Duration) -> Self::Fut {
+        tokio::time::sleep(duration)
+    }
+}
+
+impl VRuntime for VRuntimeTokio {
+    type TaskHandle<O> = JoinHandle<O>;
+
+    fn spawn<Fut>(future: Fut) -> Self::TaskHandle<Fut::Output>
+    where
+        Fut: Future + Send + 'static,
+        Fut::Output: Send + 'static,
+    {
+        tokio::spawn(future)
+    }
+
+}

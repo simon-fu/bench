@@ -1,129 +1,11 @@
 
-// use serde::Serialize;
-use std::time::{Duration, Instant};
-// use num_rational::Ratio;
-// use num::Integer;
 
-#[derive(Debug, Clone, Copy)]
-pub struct Ratio<T> {
-    numer: T,
-    denom: T,
-}
+use std::{time::{Duration, Instant}, sync::atomic::{Ordering, AtomicI64}, fmt::Write};
 
-impl<T> Ratio<T> {
-    pub fn new(numer: T, denom: T) -> Self {
-        Self { numer, denom }
-    }
+use super::interval::{CalcRate, RateEstimator, GetRateState};
 
-    #[inline]
-    pub const fn numer(&self) -> &T {
-        &self.numer
-    }
 
-    #[inline]
-    pub const fn denom(&self) -> &T {
-        &self.denom
-    }
-}
 
-pub type Rate = Ratio<u64>;
-
-impl Default for Rate {
-    fn default() -> Self {
-        Self { numer: 0, denom: 1 }
-    }
-}
-
-#[derive(Debug)]
-pub struct Pacer {
-    kick_time: Instant,
-    rate: Rate,
-}
-
-impl Pacer {
-    pub fn new(rate: Rate) -> Self {
-        Pacer {
-            kick_time: Instant::now(),
-            rate,
-        }
-    }
-
-    pub fn with_time(mut self, t: Instant) -> Self {
-        self.kick_time = t;
-        self
-    }
-
-    pub fn kick(&mut self) {
-        self.kick_time = Instant::now();
-        // self.kick_time.elapsed();
-    }
-
-    pub fn kick_time(&self) -> &Instant {
-        &self.kick_time
-    }
-
-    // if let Some(d) = pacer.get_sleep_duration(n) {
-    //     tokio::time::sleep(d).await;
-    // }
-    pub fn get_sleep_duration(&self, n: u64) -> Option<Duration> {
-        if *self.rate.denom() == 0 || *self.rate.numer() == 0 {
-            return Some(Duration::from_millis(std::u64::MAX / 2));
-        }
-
-        let expect = 1000 * n * self.rate.denom() / self.rate.numer();
-        let diff = expect as i64 - self.kick_time.elapsed().as_millis() as i64;
-        if diff > 0 {
-            Some(Duration::from_millis(diff as u64))
-        } else {
-            None
-        }
-    }
-
-    // pub fn get_wait_milli(&self, n : u64) -> i64{
-    //     if self.rate == 0 {
-    //         return std::i64::MAX/2;
-    //     }
-
-    //     let expect = 1000 * n / self.rate;
-    //     let diff = expect as i64 - self.kick_time.elapsed().as_millis() as i64;
-    //     return diff;
-    // }
-
-    // pub fn check<F, T>(&self, n : u64, mut f: F) -> Option<T>
-    // where F: FnMut(std::time::Duration) -> T,
-    // {
-    //     let diff = self.get_wait_milli(n);
-    //     if diff > 0 {
-    //         let r = f(std::time::Duration::from_millis(diff as u64));
-    //         return Some(r);
-    //     } else {
-    //         None
-    //     }
-    // }
-
-    // pub async fn check_and_wait(&self, n : u64) {
-    //     let diff = self.get_wait_milli(n);
-    //     if diff > 0 {
-    //         tokio::time::sleep(tokio::time::Duration::from_millis(diff as u64)).await;
-    //     }
-    // }
-
-    // pub async fn run_if_wait<F>(&self, n : u64, mut f: F)
-    // where
-    //     F: FnMut() -> bool,
-    // {
-    //     let mut diff = self.get_wait_milli(n);
-    //     let mut is_run_next = true;
-    //     while diff > 0 {
-    //         if is_run_next {
-    //             is_run_next = f();
-    //         } else {
-    //             tokio::time::sleep(tokio::time::Duration::from_millis(diff as u64)).await;
-    //         }
-    //         diff = self.get_wait_milli(n);
-    //     }
-    // }
-}
 
 #[derive(Debug)]
 pub struct Interval {
@@ -151,108 +33,137 @@ impl Interval {
     }
 }
 
-const INTERVAL: Duration = Duration::from_millis(1000);
 
-#[derive(Debug, Default, Clone)]
+
+
+
+
+const ORDERING: Ordering = Ordering::Relaxed;
+
+#[derive(Debug, Default)]
+pub struct AtomicTraffic {
+    pub packets: AtomicI64,
+    pub bytes: AtomicI64,
+}
+
+impl AtomicTraffic {
+    pub fn inc_traffic(&self, bytes: i64) {
+        self.packets.fetch_add(1, ORDERING);
+        self.bytes.fetch_add(bytes, ORDERING);
+    }
+}
+
+impl TrafficOp for AtomicTraffic {
+    fn get_traffic(&self) -> Traffic {
+        Traffic::new(
+            self.packets.load(ORDERING),
+            self.bytes.load(ORDERING),
+        )
+    }
+}
+
+impl GetRateState for AtomicTraffic {
+    type Output = Traffic;
+    fn get_rate_state(&self) -> Self::Output {
+        self.get_traffic()
+    }
+}
+
+pub type TrafficEstimator = RateEstimator<Traffic>;
+
+impl CalcRate for Traffic {
+    type Rate = TrafficRate;
+    type Delta = Traffic;
+
+    fn calc_rate(&self, delta: &Self::Delta, duration: Duration) -> Self::Rate {
+        TrafficRate{
+            qps:     self.packets.calc_rate(&delta.packets, duration),
+            bitrate: self.bytes.calc_rate(&delta.bytes, duration) * 8,
+        }
+    }
+
+    fn calc_delta_only(&self, new_state: &Self) -> Self::Delta { 
+        Traffic {
+            packets: new_state.packets - self.packets,
+            bytes: new_state.bytes - self.bytes,
+        }
+    }
+}
+
+impl GetRateState for Traffic {
+    type Output = Traffic;
+    fn get_rate_state(&self) -> Self::Output {
+        self.get_traffic()
+    }
+}
+
+
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Traffic {
-    pub packets: u64,
-    pub bytes: u64,
+    packets: i64,
+    bytes: i64,
 }
 
 impl Traffic {
-    pub fn inc(&mut self, bytes: u64) {
-        self.packets += 1;
-        self.bytes += bytes;
+    pub fn new(packets: i64, bytes: i64) -> Self {
+        Self { packets, bytes }
+    }
+
+    pub fn inc_traffic(&mut self, bytes: i64) {
+        self.packets += 1; 
+        self.bytes += bytes ; 
+    }
+
+    pub fn packets(&self) -> i64 {
+        self.packets
+    }
+
+    pub fn bytes(&self) -> i64 {
+        self.bytes
     }
 }
 
-#[derive(Debug)]
-pub struct TrafficSpeed {
-    last_time: Instant,
-    next_time: Instant,
-    traffic: Traffic,
-}
-
-impl Default for TrafficSpeed {
-    fn default() -> Self {
-        Self {
-            last_time: Instant::now(),
-            next_time: Instant::now() + INTERVAL,
-            traffic: Traffic::default(),
-        }
+impl TrafficOp for Traffic {
+    fn get_traffic(&self) -> Traffic {
+        *self
     }
 }
 
-impl TrafficSpeed {
-    fn reset(&mut self, now: Instant) {
-        self.last_time = now;
-        self.next_time = now + INTERVAL;
-    }
-
-    pub fn check_speed(&mut self, now: Instant, t: &Traffic) -> Option<SpeedPair> {
-        if now < self.next_time {
-            return None;
-        }
-        let d = now - self.last_time;
-        let d = d.as_millis() as u64;
-        if d == 0 {
-            return None;
-        }
-        let r = SpeedPair{
-            qps:    (t.packets - self.traffic.packets) * 1000 / d,
-            bandwidth: (t.bytes - self.traffic.bytes) * 8 * 1000 / d,
-        };
-
-        self.traffic.packets = t.packets;
-        self.traffic.bytes = t.bytes;
-        self.reset(now);
-
-        return Some(r);
-    }
-
-    // pub fn check_speed_f64(&mut self, now: Instant, t: &Traffic) -> Option<(f64, f64)> {
-    //     if now < self.next_time {
-    //         return None;
-    //     }
-    //     let d = now - self.last_time;
-    //     let d = d.as_millis() as u64;
-    //     if d == 0 {
-    //         return None;
-    //     }
-    //     let r = (
-    //         (t.packets - self.traffic.packets) as f64 * 1000.0 / d as f64,
-    //         (t.bytes - self.traffic.bytes) as f64 * 1000.0 / d as f64,
-    //     );
-
-    //     self.traffic.packets = t.packets;
-    //     self.traffic.bytes = t.bytes;
-    //     self.reset(now);
-
-    //     return Some(r);
-    // }
+pub trait TrafficOp {
+    // fn inc_traffic(&mut self, bytes: i64);
+    fn get_traffic(&self) -> Traffic;
 }
 
-#[derive(Debug)]
-pub struct SpeedPair{
-    pub qps: u64,
-    pub bandwidth: u64,
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TrafficRate{
+    pub qps: i64,
+    pub bitrate: i64,
 }
 
-impl SpeedPair {
-    pub fn human(&self) -> SpeedPairHuman {
-        SpeedPairHuman(self)
+impl ToHuman for TrafficRate {
+    type Output<'a> = TrafficRateHuman<'a> where Self: 'a;
+
+    fn to_human<'a>(&'a self) -> Self::Output<'a> {
+        TrafficRateHuman(self)
     }
 }
 
-pub struct SpeedPairHuman<'a >(&'a SpeedPair);
-impl<'a> std::fmt::Display for SpeedPairHuman<'a > {
+
+pub trait ToHuman {
+    type Output<'a>  where Self: 'a;
+    fn to_human<'a>(&'a self) -> Self::Output<'a>;
+}
+
+pub struct TrafficRateHuman<'a >(&'a TrafficRate);
+impl<'a> std::fmt::Display for TrafficRateHuman<'a > {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { 
-        f.write_fmt(format_args!("{} q/s, {}", self.0.qps, BandWidthHuman(&self.0.bandwidth)))
+        f.write_fmt(format_args!("{} q/s, {}", self.0.qps.to_human(), BitrateHuman(&self.0.bitrate)))
     }
 }
 
-pub struct BandWidthHuman<'a >(&'a u64);
-impl<'a> BandWidthHuman<'a > {
+pub struct BitrateHuman<'a>(&'a i64);
+impl<'a> BitrateHuman<'a> {
     fn fmt_me(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { 
         if *self.0 < 1_000 {
             f.write_fmt(format_args!("{} b/s", self.0))?;
@@ -269,17 +180,52 @@ impl<'a> BandWidthHuman<'a > {
     }
 }
 
-impl<'a> std::fmt::Display for BandWidthHuman<'a > {
+impl<'a> std::fmt::Display for BitrateHuman<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { 
         self.fmt_me(f)
     }
 }
 
-impl<'a> std::fmt::Debug for BandWidthHuman<'a > {
+impl<'a> std::fmt::Debug for BitrateHuman<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.fmt_me(f)
     }
 }
+
+
+impl ToHuman for i64 {
+    type Output<'a> = I64Human where Self: 'a;
+
+    fn to_human<'a>(&'a self) -> Self::Output<'a> {
+        I64Human(*self)
+    }
+}
+
+pub struct I64Human(i64);
+impl I64Human {
+    fn fmt_me(&self, mut f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { 
+        if f.sign_plus() && self.0 >= 0{
+            f.write_char('+')?;
+        }
+        num_format::WriteFormatted::write_formatted(&mut f, &self.0, &num_format::Locale::en)
+        .map_err(|_e| std::fmt::Error)?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for I64Human {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { 
+        self.fmt_me(f)
+    }
+}
+
+impl std::fmt::Debug for I64Human {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.fmt_me(f)
+    }
+}
+
+
 
 pub struct Quota {
     rate: u64,      // 常量
@@ -364,34 +310,34 @@ impl Quota {
 #[cfg(test)]
 mod test {
 
-    use super::{Quota, BandWidthHuman};
+    use super::{Quota, BitrateHuman};
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn test_bandwidth_human() {
-        assert_eq!(BandWidthHuman(&0).to_string(), "0 b/s");
-        assert_eq!(BandWidthHuman(&1).to_string(), "1 b/s");
-        assert_eq!(BandWidthHuman(&23).to_string(), "23 b/s");
-        assert_eq!(BandWidthHuman(&912).to_string(), "912 b/s");
-        assert_eq!(BandWidthHuman(&999).to_string(), "999 b/s");
-        assert_eq!(BandWidthHuman(&1_000).to_string(), "1.00 Kb/s");
-        assert_eq!(BandWidthHuman(&1_001).to_string(), "1.00 Kb/s");
-        assert_eq!(BandWidthHuman(&1_009).to_string(), "1.00 Kb/s");
-        assert_eq!(BandWidthHuman(&1_010).to_string(), "1.01 Kb/s");
-        assert_eq!(BandWidthHuman(&1_011).to_string(), "1.01 Kb/s");
-        assert_eq!(BandWidthHuman(&1_019).to_string(), "1.01 Kb/s");
-        assert_eq!(BandWidthHuman(&1_020).to_string(), "1.02 Kb/s");
-        assert_eq!(BandWidthHuman(&999_029).to_string(), "999.02 Kb/s");
-        assert_eq!(BandWidthHuman(&999_999).to_string(), "999.99 Kb/s");
-        assert_eq!(BandWidthHuman(&1_000_000).to_string(), "1.00 Mb/s");
-        assert_eq!(BandWidthHuman(&999_999_999).to_string(), "999.99 Mb/s");
-        assert_eq!(BandWidthHuman(&1_000_000_000).to_string(), "1.00 Gb/s");
-        assert_eq!(BandWidthHuman(&999_999_999_999).to_string(), "999.99 Gb/s");
-        assert_eq!(BandWidthHuman(&1_000_000_000_000).to_string(), "1.00 Tb/s");
-        assert_eq!(BandWidthHuman(&999_999_999_999_999).to_string(), "999.99 Tb/s");
-        assert_eq!(BandWidthHuman(&1_000_000_000_000_000).to_string(), "1000.00 Tb/s");
-        assert_eq!(BandWidthHuman(&999_999_999_999_999_999).to_string(), "999999.99 Tb/s");
+    fn test_bitrate_human() {
+        assert_eq!(BitrateHuman(&0).to_string(), "0 b/s");
+        assert_eq!(BitrateHuman(&1).to_string(), "1 b/s");
+        assert_eq!(BitrateHuman(&23).to_string(), "23 b/s");
+        assert_eq!(BitrateHuman(&912).to_string(), "912 b/s");
+        assert_eq!(BitrateHuman(&999).to_string(), "999 b/s");
+        assert_eq!(BitrateHuman(&1_000).to_string(), "1.00 Kb/s");
+        assert_eq!(BitrateHuman(&1_001).to_string(), "1.00 Kb/s");
+        assert_eq!(BitrateHuman(&1_009).to_string(), "1.00 Kb/s");
+        assert_eq!(BitrateHuman(&1_010).to_string(), "1.01 Kb/s");
+        assert_eq!(BitrateHuman(&1_011).to_string(), "1.01 Kb/s");
+        assert_eq!(BitrateHuman(&1_019).to_string(), "1.01 Kb/s");
+        assert_eq!(BitrateHuman(&1_020).to_string(), "1.02 Kb/s");
+        assert_eq!(BitrateHuman(&999_029).to_string(), "999.02 Kb/s");
+        assert_eq!(BitrateHuman(&999_999).to_string(), "999.99 Kb/s");
+        assert_eq!(BitrateHuman(&1_000_000).to_string(), "1.00 Mb/s");
+        assert_eq!(BitrateHuman(&999_999_999).to_string(), "999.99 Mb/s");
+        assert_eq!(BitrateHuman(&1_000_000_000).to_string(), "1.00 Gb/s");
+        assert_eq!(BitrateHuman(&999_999_999_999).to_string(), "999.99 Gb/s");
+        assert_eq!(BitrateHuman(&1_000_000_000_000).to_string(), "1.00 Tb/s");
+        assert_eq!(BitrateHuman(&999_999_999_999_999).to_string(), "999.99 Tb/s");
+        assert_eq!(BitrateHuman(&1_000_000_000_000_000).to_string(), "1000.00 Tb/s");
+        assert_eq!(BitrateHuman(&999_999_999_999_999_999).to_string(), "999999.99 Tb/s");
     }
 
     #[test]

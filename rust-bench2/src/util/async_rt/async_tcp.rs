@@ -1,5 +1,5 @@
 
-use std::future::Future;
+use std::{future::Future, time::Duration};
 use std::io::Result;
 use std::net::SocketAddr;
 use bytes::{BufMut, Buf};
@@ -7,7 +7,7 @@ use bytes::{BufMut, Buf};
 
 pub trait AsyncReadBuf
 {
-    type Fut<'a>: Future< Output = Result<usize> >
+    type Fut<'a>: Future< Output = Result<usize> > + Send
     where
         Self: 'a;
     
@@ -20,7 +20,7 @@ pub trait AsyncReadBuf
 
 pub trait AsyncWriteBuf
 {
-    type Fut<'a>: Future< Output = Result<usize> >
+    type Fut<'a>: Future< Output = Result<usize> > + Send
     where
         Self: 'a;
 
@@ -33,7 +33,7 @@ pub trait AsyncWriteBuf
 
 pub trait AsyncWriteAllBuf
 {
-    type Fut<'a>: Future< Output = Result<()> >
+    type Fut<'a>: Future< Output = Result<()> > + Send
     where
         Self: 'a;
 
@@ -46,7 +46,7 @@ pub trait AsyncWriteAllBuf
 
 pub trait AsyncFlush
 {
-    type Fut<'a>: Future< Output = Result<()> >
+    type Fut<'a>: Future< Output = Result<()> > + Send
     where
         Self: 'a;
 
@@ -55,20 +55,20 @@ pub trait AsyncFlush
         Self: Sized + Unpin;
 }
 
-// pub trait AsyncReadable
-// {
-//     type Fut<'a>: Future< Output = Result<()> >
-//     where
-//         Self: 'a;
+pub trait AsyncReadable
+{
+    type Fut<'a>: Future< Output = Result<()> > + Send
+    where
+        Self: 'a;
 
-//     fn async_readable<'a>(&'a mut self) -> Self::Fut<'a>
-//     where
-//         Self: Sized + Unpin;
-// }
+    fn async_readable<'a>(&'a mut self) -> Self::Fut<'a>
+    where
+        Self: Sized + Unpin;
+}
 
 pub trait AsyncShutdown
 {
-    type Fut<'a>: Future< Output = Result<()> >
+    type Fut<'a>: Future< Output = Result<()> > + Send
     where
         Self: 'a;
 
@@ -80,7 +80,7 @@ pub trait AsyncShutdown
 
 pub trait AsyncBindAndConnect: Sized
 {
-    type Fut<'a>: Future< Output = Result<Self> >
+    type Fut<'a>: Future< Output = Result<Self> > + Send
     where
         Self: 'a;
 
@@ -92,6 +92,17 @@ pub trait AsyncBindAndConnect: Sized
 pub trait GetLocalAddr {
     fn get_local_addr(&self) -> Result<SocketAddr>;
 }
+
+
+// pub trait Spawn
+// {
+//     fn spawn<Fut1, Fut2>(future: Fut1) ->Fut2
+//     where
+//         Fut1: Future + Send + 'static,
+//         Fut1::Output: Send + 'static,
+//         Fut2: Future< Output = Result<Fut1::Output> >,
+//     ;
+// }
 
 
 pub trait AsyncListen: Sized
@@ -131,10 +142,12 @@ pub trait AsyncAccept2<B1: BufMut+Buf, B2: Buf = B1>
 
 pub trait AsyncTcpStream
 : Unpin 
++ Send + 'static 
 + AsyncReadBuf  
 + AsyncWriteBuf
 + AsyncWriteAllBuf
 + AsyncFlush 
++ AsyncReadable
 + AsyncShutdown 
 + AsyncBindAndConnect 
 + GetLocalAddr 
@@ -144,10 +157,12 @@ pub trait AsyncTcpStream
 
 pub trait AsyncTcpStream2<B1: BufMut+Buf, B2: Buf = B1> 
 : Unpin 
++ Send + 'static 
 + AsyncReadBuf<Buf = B1>  
 + AsyncWriteBuf<Buf = B2> 
 + AsyncWriteAllBuf<Buf = B2> 
 + AsyncFlush 
++ AsyncReadable
 + AsyncShutdown 
 + AsyncBindAndConnect 
 + GetLocalAddr 
@@ -173,4 +188,23 @@ pub trait AsyncTcpListener2<B1: BufMut+Buf, B2: Buf = B1>
 {
     
 }
+
+pub trait AsyncSleep
+{
+    type Fut: Future< Output = () > + Send;
+
+    fn async_sleep(duration: Duration) -> Self::Fut;
+}
+
+pub trait VRuntime: Unpin + AsyncSleep {
+    type TaskHandle<O>: Future;
+
+    fn spawn<Fut>(future: Fut) -> Self::TaskHandle<Fut::Output>
+    where
+        Fut: Future + Send + 'static,
+        Fut::Output: Send + 'static,
+    ;
+
+}
+
 
