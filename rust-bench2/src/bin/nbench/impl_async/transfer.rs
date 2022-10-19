@@ -9,8 +9,6 @@ pub async fn xfer_sending<S>(socket: &mut S, buf2: &mut BufPair, hreq: &Handshak
 where
     S: AsyncTcpStream2<BytesMut>,
 { 
-    // let mut estimator = TrafficEstimator::default();
-    // let mut traffic = Traffic::default();
 
     let data = vec![0_u8; hreq.data_len];
     let start = Instant::now();
@@ -20,10 +18,6 @@ where
         socket.async_write_buf(&mut buf2.obuf).await?;
 
         traffic.inc_traffic(hreq.data_len as i64);
-
-        // if let Some(r) = estimator.estimate(Instant::now(), &traffic) {
-        //     info!( "send rate: [{}]", r.to_human());
-        // }
     }
     packet::encode_data(PacketType::Data, &[], &mut buf2.obuf)?;
     socket.async_write_all_buf(&mut buf2.obuf).await?;
@@ -38,8 +32,6 @@ pub async fn xfer_recving<S>(socket: &mut S, buf2: &mut BufPair, traffic: &Atomi
 where
     S: AsyncTcpStream2<BytesMut>,
 { 
-    // let mut estimator = TrafficEstimator::default();
-    // let mut traffic = Traffic::default();
 
     loop {
         let header = read_packet(socket, &mut buf2.ibuf).await?;
@@ -54,9 +46,6 @@ where
                 }
 
                 traffic.inc_traffic(len as i64);
-                // if let Some(r) = estimator.estimate(Instant::now(), &traffic) {
-                //     info!( "recv rate: [{}]", r.to_human());
-                // }
             },
             _ => bail!("xfering but got packet type {}", header.ptype),
         } 
@@ -99,57 +88,3 @@ where
         }
     }
 }
-
-// pub mod conns_state {
-//     use std::sync::atomic::Ordering;
-
-//     use rust_bench::util::{atomic_count::conn_count::{ConnCount, ConnSnapshot}, traffic::{AtomicTraffic, Traffic, TrafficRate, TrafficOp}, interval::{GetRateState, CalcRate}};
-
-//     struct ConnsStati {
-//         conns: ConnCount,
-//         traffic: AtomicTraffic, 
-//     }
-    
-//     impl GetRateState for ConnsStati {
-//         type Output = RateState;
-//         fn get_rate_state(&self) -> Self::Output { 
-//             RateState {
-//                 conns: self.conns.snapshot(),
-//                 traffic: self.traffic.get_traffic(),
-//             }
-//         }
-//     }
-    
-//     const ORDERING: Ordering = Ordering::Relaxed;
-    
-//     struct RateState {
-//         conns: ConnSnapshot,
-//         traffic: Traffic,
-//     }
-    
-//     #[derive(Debug, Clone, Copy, Default)]
-//     struct Rate {
-//         conns: ConnSnapshot,
-//         traffic: TrafficRate,
-//     }
-    
-//     impl CalcRate for RateState {
-//         type Delta = RateState;
-//         type Rate = Rate;
-    
-//         fn calc_rate(&self, delta: &Self::Delta, duration: std::time::Duration) -> Self::Rate  {
-//             let conns = self.conns.calc_rate(&delta.conns, duration);
-//             Rate {
-//                 conns,
-//                 traffic: self.traffic.calc_rate(&delta.traffic, duration),
-//             }
-//         }
-    
-//         fn calc_delta_only(&self, new_state: &Self) -> Self::Delta  {
-//             RateState {
-//                 conns: self.conns.calc_delta_only(&new_state.conns),
-//                 traffic: self.traffic.calc_delta_only(&new_state.traffic),
-//             }
-//         }
-//     }
-// }

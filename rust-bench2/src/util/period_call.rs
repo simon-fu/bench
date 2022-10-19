@@ -11,15 +11,16 @@ pub trait PeriodCall {
 }
 
 
-pub struct PeriodCallGuard<RT> 
+pub struct PeriodCallGuard<RT, Ext=()> 
 where
     RT: VRuntime,
 {
     inner: Arc<PeriodCallGuardInner>,
     task: Option<RT::TaskHandle<()>>,
+    ext: Ext,
 }
 
-impl<RT> Drop for PeriodCallGuard<RT> 
+impl<RT, Ext> Drop for PeriodCallGuard<RT, Ext> 
 where
     RT: VRuntime,
 {
@@ -29,10 +30,14 @@ where
     }
 }
 
-impl<RT> PeriodCallGuard<RT> 
+impl<RT, Ext> PeriodCallGuard<RT, Ext> 
 where
     RT: VRuntime,
 {
+    pub fn ext(&self) -> &Ext {
+        &self.ext
+    }
+
     pub fn into_task(mut self) -> Option<RT::TaskHandle<()>> {
         self.task.take()
     }
@@ -63,11 +68,18 @@ impl std::future::Future for &PeriodCallGuardInner {
     }
 }
 
-
-pub fn period_call<RT, C>(mut job: C) -> PeriodCallGuard<RT>
+pub fn period_call<RT, J>(job: J) -> PeriodCallGuard<RT>
 where
     RT: VRuntime,
-    C: PeriodCall + Send + 'static,
+    J: PeriodCall + Send + 'static,
+{
+    period_call_with(job, ())
+}
+
+pub fn period_call_with<RT, J, Ext>(mut job: J, ext: Ext) -> PeriodCallGuard<RT, Ext>
+where
+    RT: VRuntime,
+    J: PeriodCall + Send + 'static,
 {
     let inner0 = Arc::new(PeriodCallGuardInner { 
         exit_req: AtomicBool::new(false),
@@ -99,6 +111,7 @@ where
     let guard = PeriodCallGuard {
         inner: inner0,
         task: Some(task),
+        ext,
     };
 
     guard

@@ -12,7 +12,7 @@
 use anyhow::Result;
 use args::{Args, Commands};
 use clap::Parser;
-use tracing::{info, error};
+use tracing::{info, error, metadata::LevelFilter};
 
 
 mod args;
@@ -22,18 +22,34 @@ mod impl_std;
 
 
 
-
-// #[tokio::main]
 fn main() -> Result<()> {
 
     let args = Args::parse(); 
 
-    tracing_subscriber::fmt()
-    .without_time()
-    .with_target(false)
-    .init();
+    {
+        use tracing_subscriber::{EnvFilter, fmt::{self, time::OffsetTime}, prelude::*};
+        use time::macros::format_description;
 
-    // info!("rust of iperf");
+        // see https://time-rs.github.io/book/api/format-description.html
+        let offset = time::UtcOffset::current_local_offset()?;
+        let timer = OffsetTime::new(offset, format_description!("[hour]:[minute]:[second]:[subsecond digits:3]"));
+
+        let layer = fmt::layer()
+        .with_target(false)
+        .with_timer(timer);
+
+        let filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
+        tracing_subscriber::registry()
+        .with(layer)
+        .with(filter)
+        .init();
+    }
+    
+
+
     info!("num_cpus: {}", num_cpus::get());
 
     let r = run_me(args);
@@ -51,6 +67,7 @@ fn run_me(args: Args) -> Result<()> {
     match args.command {
         Commands::Client(mut client_args) => {
             client_args.normalize()?;
+            info!("runtime: {:?}", client_args.runtime);
             match client_args.runtime {
                 args::RuntimeType::Std => impl_std::run_as_client(&client_args),
                 args::RuntimeType::Tokio => impl_async::run_tokio_client(client_args),
@@ -58,6 +75,7 @@ fn run_me(args: Args) -> Result<()> {
         }
         Commands::Server(mut server_args) => {
             server_args.normalize()?;
+            info!("runtime: {:?}", server_args.runtime);
             match server_args.runtime {
                 args::RuntimeType::Std => impl_std::run_as_server(&server_args),
                 args::RuntimeType::Tokio => impl_async::run_tokio_server(server_args),

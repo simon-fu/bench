@@ -4,10 +4,11 @@ use std::sync::Arc;
 use anyhow::{Result, Context, bail};
 use bytes::{Buf, BytesMut};
 use futures::FutureExt;
-use rust_bench::util::{async_rt::async_tcp::{AsyncTcpListener2, AsyncTcpStream2, VRuntime}, now_millis, period_call::period_call, interval::{GetRateState, PeriodRate}, atomic_count::{conn_count::{ConnSnapshot, ConnCount, TOTAL, DONE, ACTIVE}, ToAtomicRateHuman}, traffic::AtomicTraffic};
+use rust_bench::util::{async_rt::async_tcp::{AsyncTcpListener2, AsyncTcpStream2, VRuntime}, now_millis};
 use crate::{args::ServerArgs, packet::BufPair};
 
-use super::{super::{packet::{self, PacketType, HandshakeRequest, HandshakeResponse, HandshakeResponseCode}}, transfer::{read_specific_packet, xfer_recving, xfer_sending}};
+use super::{super::{packet::{self, PacketType, HandshakeRequest, HandshakeResponse, HandshakeResponseCode}}, transfer::{read_specific_packet, xfer_recving, xfer_sending}, conn_stati::{ACTIVE, TOTAL, DONE, period_stati, GetConnsStati, ConnsStati}};
+
 use tracing::{info, debug};
 
 
@@ -46,17 +47,11 @@ where
     L: AsyncTcpListener2<BytesMut>,
 {    
 
-    ctx.conns.reset();
+    ctx.stati.conns().reset();
 
-    let period_job = PeriodRate::new(ctx.clone(), |ctx, completed, (delta, rate)| {
-        if !delta.is_zero() || completed {
-            info!("connections: {}", ctx.conns.to_atomic_rate_human(&delta, &rate));
-        }
-    });
+    let guard = period_stati::<RT, _>(ctx.clone());
 
-    let guard = period_call::<RT, _>(period_job);
-
-    let mut watcher = ctx.conns.watch(); // CountWatcher::new(&ctx.conns);
+    let mut watcher = ctx.stati.conns().watch(); 
 
     loop {
 
@@ -71,8 +66,7 @@ where
                 let (mut socket, remote) = r.with_context(||"fail to accept")?;
                 debug!("Accepted connection from [{}]", remote);
         
-                // const ORDERING: Ordering = Ordering::Acquire;
-                ctx.conns.add_only(TOTAL, 1);
+                ctx.stati.conns().add_only(TOTAL, 1);
                 let ctx = ctx.clone();
                 let mut buf2 = BufPair::default();
                 *cid += 1;
@@ -87,8 +81,7 @@ where
                             info!("connection error [{:?}]", e);
                         },
                     }
-                    // info!("the client has terminated"); 
-                    ctx.conns.add_and_wake(DONE, 1);
+                    ctx.stati.conns().add_and_wake(DONE, 1);
                 });
             }
         }
@@ -99,7 +92,7 @@ where
         task.await;
     }
 
-    info!("All clients have terminated"); 
+    info!("all clients have terminated"); 
     info!(""); 
 
     Ok(())
@@ -109,14 +102,12 @@ where
 
 #[derive(Debug, Default)]
 struct Server {
-    conns: ConnCount,
-    traffic: AtomicTraffic, 
+    stati: ConnsStati,
 }
 
-impl GetRateState for Server {
-    type Output = ConnSnapshot;
-    fn get_rate_state(&self) -> Self::Output {
-        self.conns.snapshot()
+impl GetConnsStati for Server {
+    fn get_conns_stati(&self) -> &ConnsStati {
+        &self.stati
     }
 }
 
@@ -160,12 +151,12 @@ where
     )?;
     socket.async_write_all_buf(&mut buf2.obuf).await?;
 
-    ctx.conns.add_only(ACTIVE, 1);
+    ctx.stati.conns().add_only(ACTIVE, 1);
 
     if !hreq.is_reverse {
-        xfer_recving(socket, buf2, &ctx.traffic).await
+        xfer_recving(socket, buf2, ctx.stati.traffic()).await
     } else {
-        xfer_sending(socket, buf2, &hreq, &ctx.traffic).await
+        xfer_sending(socket, buf2, &hreq, ctx.stati.traffic()).await
     }
     
 

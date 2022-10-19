@@ -7,7 +7,7 @@ use array_init::array_init;
 
 use crate::util::traffic::ToHuman;
 
-use super::interval::CalcRate;
+use super::period_rate::CalcRate;
 
 const ORDERING: Ordering = Ordering::Relaxed;
 
@@ -261,41 +261,41 @@ pub trait ToAtomicRateHuman<const N: usize> {
     ) -> AtomicI64ArrayRateHuman<'a, N> ;
 }
 
-pub mod conn_count {
-    use std::ops::Deref;
+// pub mod conn_count {
+//     use std::ops::Deref;
 
-    use super::{AtomicCounts, ToAtomicRateHuman, AtomicI64ArrayRateHuman, I64Array};
+//     use super::{AtomicCounts, ToAtomicRateHuman, AtomicI64ArrayRateHuman, I64Array};
 
-    pub const NAMES: [&str; 3] = ["total", "active", "done",];
-    pub const TOTAL: usize = 0;
-    pub const ACTIVE: usize = 1;
-    pub const DONE: usize = 2;
+//     pub const NAMES: [&str; 3] = ["total", "active", "done",];
+//     pub const TOTAL: usize = 0;
+//     pub const ACTIVE: usize = 1;
+//     pub const DONE: usize = 2;
 
-    pub type ConnSnapshot = I64Array<3>;
+//     pub type ConnValues = I64Array<3>;
 
-    #[derive(Debug, Default)]
-    pub struct ConnCount(AtomicCounts<3>);
+//     #[derive(Debug, Default)]
+//     pub struct ConnCount(AtomicCounts<3>);
 
-    impl Deref for  ConnCount {
-        type Target = AtomicCounts<3>;
+//     impl Deref for  ConnCount {
+//         type Target = AtomicCounts<3>;
     
-        fn deref(&self) -> &Self::Target {
-            &self.0
-        }
-    }
+//         fn deref(&self) -> &Self::Target {
+//             &self.0
+//         }
+//     }
 
-    impl ToAtomicRateHuman<3> for ConnCount {
-        type Output<'a> = AtomicI64ArrayRateHuman<'a, 3> where Self: 'a;
+//     impl ToAtomicRateHuman<3> for ConnCount {
+//         type Output<'a> = AtomicI64ArrayRateHuman<'a, 3> where Self: 'a;
 
-        fn to_atomic_rate_human<'a>(
-            &'a self, 
-            delta: &'a super::I64Array<3>, 
-            rate: &'a Option<super::I64Array<3>>
-        ) -> super::AtomicI64ArrayRateHuman<'a, 3>  {
-            self.rate_human_with_names(&NAMES, delta, rate)
-        }
-    }
-}
+//         fn to_atomic_rate_human<'a>(
+//             &'a self, 
+//             delta: &'a super::I64Array<3>, 
+//             rate: &'a Option<super::I64Array<3>>
+//         ) -> super::AtomicI64ArrayRateHuman<'a, 3>  {
+//             self.rate_human_with_names(&NAMES, delta, rate)
+//         }
+//     }
+// }
 
 
 
