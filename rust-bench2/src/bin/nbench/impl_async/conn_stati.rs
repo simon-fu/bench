@@ -1,15 +1,13 @@
 use event_listener::Event;
-use rust_bench::util::{atomic_count::{AtomicCounts, ToAtomicRateHuman, AtomicI64ArrayRateHuman, I64Array}, traffic::{AtomicTraffic, Traffic, TrafficRate, TrafficOp, ToHuman}, period_rate::{GetRateState, CalcRate, PeriodRate}, async_rt::async_tcp::VRuntime, period_call::{period_call, PeriodCallGuard}};
+use rust_bench::util::{atomic_count::{I64Atomics, I64Values, ToRateHuman}, traffic::{AtomicTraffic, Traffic, TrafficRate, TrafficOp, ToHuman}, period_rate::{GetRateState, CalcRate, PeriodRate}, async_rt::async_tcp::VRuntime, period_call::{period_call, PeriodCallGuard}};
 use tracing::info;
 
-use std::{ops::Deref, sync::Arc};
+use std::sync::Arc;
 
 
 pub fn period_stati<RT, C>(ctx: C) -> PeriodCallGuard<RT>
 where
     RT: VRuntime,
-    // G: GetRateState<Output = RateState> + GetConnsStati + Send + Sync + 'static,
-    // C: AsRef<G> + Send + 'static,
     C: GetConnsStati + Send + 'static,
 {
     let ctx = RateWrapper {
@@ -27,7 +25,7 @@ where
         
         if !delta.conns.is_zero() { 
             let rate = rate.map(|v|v.conns);
-            let human = ctx.as_ref().conns().to_atomic_rate_human(&delta.conns, &rate);
+            let human = ctx.as_ref().conns().to_rate_human(&NAMES, &delta.conns, &rate);
             info!("connections: {}", human);
         }
 
@@ -52,16 +50,17 @@ where
     }
 }
 
+pub type Conns = I64Atomics<CNUM>;
 
 #[derive(Debug, Default)]
 pub struct ConnsStati {
-    conns: ConnCount,
+    conns: Conns,
     traffic: AtomicTraffic, 
     event: Event,
 }
 
 impl ConnsStati {
-    pub fn conns(&self) -> &ConnCount {
+    pub fn conns(&self) -> &Conns {
         &self.conns
     }
 
@@ -125,42 +124,17 @@ pub const NAMES: [&str; 3] = ["total", "active", "done",];
 pub const TOTAL: usize = 0;
 pub const ACTIVE: usize = 1;
 pub const DONE: usize = 2;
-
-pub type ConnValues = I64Array<3>;
-
-#[derive(Debug, Default)]
-pub struct ConnCount(AtomicCounts<3>);
-
-impl Deref for  ConnCount {
-    type Target = AtomicCounts<3>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl ToAtomicRateHuman<3> for ConnCount {
-    type Output<'a> = AtomicI64ArrayRateHuman<'a, 3> where Self: 'a;
-
-    fn to_atomic_rate_human<'a>(
-        &'a self, 
-        delta: &'a I64Array<3>, 
-        rate: &'a Option<I64Array<3>>
-    ) -> AtomicI64ArrayRateHuman<'a, 3>  {
-        self.rate_human_with_names(&NAMES, delta, rate)
-    }
-}
-
+const CNUM: usize = 3;
 
 
 pub struct RateState {
-    pub conns: ConnValues,
+    pub conns: I64Values<CNUM> ,
     pub traffic: Traffic,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Rate {
-    pub conns: ConnValues,
+    pub conns: I64Values<CNUM>,
     pub traffic: TrafficRate,
 }
 
@@ -212,3 +186,4 @@ where
         self.inner.get_conns_stati().get_rate_state()
     }
 }
+

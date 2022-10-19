@@ -47,26 +47,33 @@ where
     L: AsyncTcpListener2<BytesMut>,
 {    
 
-    ctx.stati.conns().reset();
+    ctx.stati.conns().reset_to(0);
 
     let guard = period_stati::<RT, _>(ctx.clone());
 
-    let mut watcher = ctx.stati.conns().watch(); 
+    // let mut watcher = ctx.stati.conns().watch(); 
 
     loop {
 
         futures::select! {
-            _r = watcher.wait_for().fuse() => {
-                if watcher.last().is_equ2(TOTAL, DONE) { 
+            _r = ctx.stati.wait_next_period().fuse() => { 
+                let snapshot = ctx.stati.conns().snapshot();
+                if snapshot.get_at(TOTAL) > 0 &&  snapshot.is_equ2(TOTAL, DONE) {
                     break;
                 }
             }
+
+            // _r = watcher.wait_for().fuse() => {
+            //     if watcher.last().is_equ2(TOTAL, DONE) { 
+            //         break;
+            //     }
+            // }
 
             r = listener.async_accept().fuse() => {
                 let (mut socket, remote) = r.with_context(||"fail to accept")?;
                 debug!("Accepted connection from [{}]", remote);
         
-                ctx.stati.conns().add_only(TOTAL, 1);
+                ctx.stati.conns().add_at(TOTAL, 1);
                 let ctx = ctx.clone();
                 let mut buf2 = BufPair::default();
                 *cid += 1;
@@ -81,7 +88,7 @@ where
                             info!("connection error [{:?}]", e);
                         },
                     }
-                    ctx.stati.conns().add_and_wake(DONE, 1);
+                    ctx.stati.conns().add_at(DONE, 1);
                 });
             }
         }
@@ -151,7 +158,7 @@ where
     )?;
     socket.async_write_all_buf(&mut buf2.obuf).await?;
 
-    ctx.stati.conns().add_only(ACTIVE, 1);
+    ctx.stati.conns().add_at(ACTIVE, 1);
 
     if !hreq.is_reverse {
         xfer_recving(socket, buf2, ctx.stati.traffic()).await

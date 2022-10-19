@@ -36,25 +36,25 @@ where
 
     for _ in 0..shared.args.conns { 
         
-        if shared.stati.conns().get(DONE) > 0 {
+        if shared.stati.conns().get_at(DONE) > 0 {
             bail!("some connection had broken when connecting")
         }
 
-        let r = pacer.get_sleep_duration(shared.stati.conns().get(TOTAL) as u64);
+        let r = pacer.get_sleep_duration(shared.stati.conns().get_at(TOTAL) as u64);
         if let Some(d) = r {
             RT::async_sleep(d).await;
         }
 
         let shared = shared.clone();
         
-        shared.stati.conns().add_only(TOTAL, 1);
+        shared.stati.conns().add_at(TOTAL, 1);
 
         RT::spawn(async move {
             let r = run_one::<S>(&shared).await;
             if let Err(e) = r {
                 info!("connection error [{}]", e);
             }
-            shared.stati.conns().add_and_wake(DONE, 1);
+            shared.stati.conns().add_at(DONE, 1);
         });
     }
     
@@ -107,7 +107,7 @@ where
         bail!("expect version [{}] but [{}]", packet::VERSION, rsp.ver);
     }
 
-    shared.stati.conns().add_and_wake(ACTIVE, 1);
+    shared.stati.conns().add_at(ACTIVE, 1);
 
     let listener = shared.event.listen();
 
