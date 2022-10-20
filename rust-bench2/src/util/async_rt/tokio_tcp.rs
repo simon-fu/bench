@@ -99,7 +99,7 @@ impl AsyncBindAndConnect for TcpStream {
     = impl Future< Output = Result<Self> > where Self: 'a;
 
     #[inline]
-    fn async_bind_and_connect<'a>(bind_addr: SocketAddr, target_addr: &str) -> Self::Fut<'_>
+    fn async_bind_and_connect<'a>(bind_addr: Option<SocketAddr>, target_addr: &str) -> Self::Fut<'_>
     where
         Self: Sized + Unpin,
     {
@@ -107,24 +107,29 @@ impl AsyncBindAndConnect for TcpStream {
     }
 }
 
-async fn tcp_bind_and_connect<A>(bind_addr: SocketAddr, target_addr: A) -> std::io::Result<TcpStream> 
+async fn tcp_bind_and_connect<A>(bind_addr: Option<SocketAddr>, target_addr: A) -> std::io::Result<TcpStream> 
 where
     A: ToSocketAddrs
 {
-    let mut connect_result = Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Not found target addr"));
-    for addr in lookup_host(&target_addr).await? {
-        let socket = TcpSocket::new_v4()?;
-        socket.set_reuseaddr(true)?;
-        // socket.set_reuseport(true)?;
-        socket.bind(bind_addr)?;
-        connect_result = socket.connect(addr).await;
-        if connect_result.is_ok() {
-            break;
-        }
+    match bind_addr { 
+        None => TcpStream::connect(target_addr).await,
+        Some(bind_addr) => {
+            let mut connect_result = Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Not found target addr"));
+            for addr in lookup_host(&target_addr).await? {
+                let socket = TcpSocket::new_v4()?;
+                socket.set_reuseaddr(true)?;
+                // socket.set_reuseport(true)?;
+                socket.bind(bind_addr)?;
+                connect_result = socket.connect(addr).await;
+                if connect_result.is_ok() {
+                    break;
+                }
+            }
+            let stream = connect_result?;
+            // stream.set_nodelay(false)?;
+            Ok(stream)
+        },
     }
-    let stream = connect_result?;
-    // stream.set_nodelay(false)?;
-    Ok(stream)
 }
 
 impl GetLocalAddr for TcpStream {

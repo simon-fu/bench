@@ -20,7 +20,15 @@ where
 {
     let target_addr = format!("{}:{}", args.host, args.common.server_port);
 
-    let bind_addr: SocketAddr = format!("{}:{}", args.common.bind.as_deref().unwrap_or_else(||"0.0.0.0"), args.cport).parse()?; 
+    // let bind_addr: SocketAddr = format!("{}:{}", args.common.bind.as_deref().unwrap_or_else(||"0.0.0.0"), args.cport).parse()?; 
+    let bind_addr: Option<SocketAddr> = match &args.common.bind {
+        Some(bind_addr) => if args.cport > 0 {
+            Some(format!("{}:{}", bind_addr, args.cport).parse()?)
+        } else {
+            None
+        },
+        None => None,
+    };
 
     info!("Connecting to [{}]...", target_addr);
     

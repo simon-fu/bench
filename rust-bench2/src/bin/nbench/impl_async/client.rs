@@ -21,9 +21,12 @@ where
     // S: AsyncWriteAllBuf<Buf = BytesMut>,
     // S: AsyncWriteBuf<Buf = BytesMut>,
 {
-
+    
     let shared = Arc::new(Shared { 
-        bind_addr: args.bind.parse()?,
+        bind_addr: match &args.bind {
+            Some(bind) => Some(bind.parse()?),
+            None => None,
+        },
         args,
         event: Default::default(),
         stati: Default::default(),
@@ -37,7 +40,7 @@ where
     for _ in 0..shared.args.conns { 
         
         if shared.stati.conns().get_at(DONE) > 0 {
-            bail!("some connection had broken when connecting")
+            bail!("some connections had broken when connecting")
         }
 
         let r = pacer.get_sleep_duration(shared.stati.conns().get_at(TOTAL) as u64);
@@ -146,7 +149,7 @@ impl GetConnsStati for Shared {
 
 struct Shared {
     args: ClientArgs,
-    bind_addr: SocketAddr,
+    bind_addr: Option<SocketAddr>,
     event: Event,
     stati: ConnsStati,
 }

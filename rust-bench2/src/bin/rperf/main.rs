@@ -23,6 +23,7 @@
 use anyhow::{Result, bail};
 use args::Args;
 use clap::Parser;
+use rust_bench::util::log;
 use tracing::{info, error};
 
 mod args;
@@ -36,14 +37,10 @@ mod impl_std;
 // #[tokio::main]
 fn main() -> Result<()> {
     let args = Args::parse(); 
-
-    tracing_subscriber::fmt()
-    .without_time()
-    .with_target(false)
-    .init();
+    log::init()?;
 
     // info!("rust of iperf");
-    info!("num_cpus: {}", num_cpus::get());
+    info!("num_cpus {}, runtime {:?}", num_cpus::get(), args.runtime);
 
     let r = run_me(&args);
     match r {

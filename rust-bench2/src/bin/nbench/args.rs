@@ -20,11 +20,11 @@ pub enum Commands {
 
 #[derive(Parser, Debug, Clone)]
 pub struct ClientArgs {
-    #[clap(long = "target", long_help = "target server address, format of ip:port")]
+    #[clap(short = 'c', long = "target", long_help = "target server address to connect, in the format of ip:port")]
     pub target: String,
 
-    #[clap(long = "bind", long_help = "bind to local address", default_value = "0.0.0.0:0")]
-    pub bind: String,
+    #[clap(long = "bind", long_help = "bind to local address")]
+    pub bind: Option<String>,
 
     #[clap(short = 'l', long = "len", long_help = "packet length; default 128 KB")]
     len: Option<usize>,
@@ -42,7 +42,7 @@ pub struct ClientArgs {
     #[clap(long = "conn", long_help = "all connections to setup", default_value = "1")]
     pub conns: usize,
 
-    #[clap(long = "cps", long_help = "setup connection rate", default_value = "1000")]
+    #[clap(long = "cps", long_help = "setup connections rate", default_value = "1000")]
     pub cps: usize,
 }
 
@@ -52,8 +52,11 @@ impl ClientArgs {
         normalize_addr(&mut self.target, DEFAULT_SERVER_PORT)
         .with_context(||"invalid target")?;
 
-        normalize_addr(&mut self.bind, "0")
-        .with_context(||"invalid bind")?;
+        if let Some(r) = &mut self.bind {
+            normalize_addr(r, "0")
+            .with_context(||"invalid bind")?;
+        }
+        
         Ok(())
     }
 

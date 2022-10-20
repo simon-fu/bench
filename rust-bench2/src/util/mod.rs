@@ -10,7 +10,7 @@ pub mod atomic_count;
 pub mod count_event;
 pub mod period_call;
 pub mod period_rate;
-
+pub mod log;
 
 
 // // from https://www.jianshu.com/p/e30eef29f66e

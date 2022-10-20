@@ -84,7 +84,7 @@ pub trait AsyncBindAndConnect: Sized
     where
         Self: 'a;
 
-    fn async_bind_and_connect<'a>(bind_addr: SocketAddr, target_addr: &'a str) -> Self::Fut<'a>
+    fn async_bind_and_connect<'a>(bind_addr: Option<SocketAddr>, target_addr: &'a str) -> Self::Fut<'a>
     where
         Self: Sized + Unpin;
 }

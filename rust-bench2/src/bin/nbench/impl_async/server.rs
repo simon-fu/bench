@@ -85,7 +85,7 @@ where
                         Ok(_r) => {
                         },
                         Err(e) => {
-                            info!("connection error [{:?}]", e);
+                            debug!("connection error [{:?}]", e);
                         },
                     }
                     ctx.stati.conns().add_at(DONE, 1);
