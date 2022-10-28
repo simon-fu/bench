@@ -17,8 +17,11 @@ where
 
     let kick_ts = now_millis();
     let next_ts = |packets| { 
-        // now_millis()
-        kick_ts + pacer.offset_milli(packets) as i64
+        if hreq.pps > 0 {
+            kick_ts + pacer.offset_milli(packets) as i64
+        } else {
+            now_millis()
+        }
     };
 
     let start = Instant::now();
