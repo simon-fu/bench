@@ -15,13 +15,14 @@ where
     let pacer = Pacer::new(hreq.pps as u64);
     let mut packets = 0_u64;
 
-    let kick_ts = now_millis();
-    let next_ts = |packets| { 
-        if hreq.pps > 0 {
-            kick_ts + pacer.offset_milli(packets) as i64
-        } else {
-            now_millis()
-        }
+    let _kick_ts = now_millis();
+    let next_ts = |_packets| { 
+        // if hreq.pps > 0 {
+        //     kick_ts + pacer.offset_milli(packets) as i64
+        // } else {
+        //     now_millis()
+        // }
+        now_millis()
     };
 
     let start = Instant::now();
