@@ -5,9 +5,9 @@ use anyhow::{Result, Context, bail};
 use bytes::{Buf, BytesMut};
 use event_listener::Event;
 use futures::FutureExt;
-use rust_bench::util::{async_rt::async_tcp::{AsyncTcpStream2, VRuntime}, now_millis, pacer::Pacer};
+use rust_bench::util::{async_rt::async_tcp::{AsyncTcpStream2, VRuntime}, now_millis, pacer::Pacer, histogram::{Histogram, self}};
 use tracing::{info, debug};
-use crate::{args::ClientArgs, packet::{HandshakeRequest, self, PacketType, HandshakeResponse, BufPair}};
+use crate::{args::ClientArgs, packet::{HandshakeRequest, self, PacketType, HandshakeResponse, BufPair}, impl_async::common::print_latency_percentile};
 use super::transfer::{read_specific_packet, xfer_sending, xfer_recving};
 use super::conn_stati::{ACTIVE, TOTAL, DONE, period_stati, GetConnsStati, ConnsStati};
 
@@ -30,6 +30,7 @@ where
         args,
         event: Default::default(),
         stati: Default::default(),
+        hist: histogram::new_latency("client_hist", "client hist help")?,
     });
 
     
@@ -72,6 +73,8 @@ where
 
     shared.stati.wati_for_conns_done(guard).await;
 
+    print_latency_percentile(&shared.hist)?;
+
     info!( "Done");
 
     Ok(())
@@ -110,28 +113,33 @@ where
         bail!("expect version [{}] but [{}]", packet::VERSION, rsp.ver);
     }
 
+    let mut hist = shared.hist.local();
     shared.stati.conns().add_at(ACTIVE, 1);
 
-    let listener = shared.event.listen();
 
-    futures::select! {
+    if !shared.args.is_reverse {
+        let listener = shared.event.listen();
 
-        _r = listener.fuse() => {}
+        futures::select! {
 
-        r = socket.async_read_buf(&mut buf2.ibuf).fuse() => {
-            let n = r?;
-            if n == 0 {
-                bail!("waiting for kick but disconnected")
-            } else {
-                bail!("waiting for kick but incoming data")
+            _r = listener.fuse() => {}
+    
+            r = socket.async_read_buf(&mut buf2.ibuf).fuse() => {
+                let n = r?;
+                if n == 0 {
+                    bail!("waiting for kick but disconnected")
+                } else {
+                    bail!("waiting for kick but incoming data")
+                }
             }
         }
-    }
+    } 
+
 
     if !shared.args.is_reverse {
         xfer_sending(&mut socket, &mut buf2, &hreq, shared.stati.traffic()).await?;
     } else {
-        xfer_recving(&mut socket, &mut buf2, shared.stati.traffic()).await?;
+        xfer_recving(&mut socket, &mut buf2, shared.stati.traffic(), 0, &mut hist).await?;
     }
 
     socket.async_shutdown().await?;
@@ -152,5 +160,6 @@ struct Shared {
     bind_addr: Option<SocketAddr>,
     event: Event,
     stati: ConnsStati,
+    hist: Histogram,
 }
 

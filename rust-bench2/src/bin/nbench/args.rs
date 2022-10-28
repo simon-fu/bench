@@ -5,7 +5,7 @@ use anyhow::{Result, Context};
 use rust_bench::util::normalize_addr;
 
 #[derive(Parser, Debug, Clone)]
-#[clap(name = "nbench", author, about)]
+#[clap(name = "nbench", author, about = "network bench", long_about = None)]
 pub struct Args {
     #[command(subcommand)]
     pub command: Commands,
@@ -19,6 +19,7 @@ pub enum Commands {
 }
 
 #[derive(Parser, Debug, Clone)]
+#[clap(about = "run as client")]
 pub struct ClientArgs {
     #[clap(short = 'c', long = "target", long_help = "target server address to connect, in the format of ip:port")]
     pub target: String,
@@ -66,6 +67,7 @@ impl ClientArgs {
 }
 
 #[derive(Parser, Debug, Clone)]
+#[clap(about = "run as server")]
 pub struct ServerArgs {
     #[clap(long = "bind", long_help = "bind to local address", default_value = DEFAULT_BIND, )]
     pub bind: String,

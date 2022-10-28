@@ -213,8 +213,11 @@ impl GetRateState for i64 {
 impl GetRateState for AtomicI64 {
     type Output = i64;
     fn get_rate_state(&self) -> Self::Output {
-        self.load(ORDERING)
+        self.load(ORDERING_LOAD)
     }
 }
 
-const ORDERING: Ordering = Ordering::Relaxed;
+
+// const ORDERING_STORE: Ordering = Ordering::Relaxed; // Release;
+const ORDERING_LOAD: Ordering = Ordering::Relaxed;  // Acquire;
+// const ORDERING_RMW: Ordering = Ordering::Relaxed; // AcqRel; // Read-Modify-Write

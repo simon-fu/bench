@@ -25,7 +25,7 @@ where
     RT: VRuntime,
 {
     fn drop(&mut self) { 
-        self.inner.exit_req.store(true, ORDERING);
+        self.inner.exit_req.store(true, ORDERING_STORE);
         self.inner.task_waker.wake();
     }
 }
@@ -54,13 +54,13 @@ impl std::future::Future for &PeriodCallGuardInner {
 
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
 
-        if self.exit_req.load(ORDERING) {
+        if self.exit_req.load(ORDERING_LOAD) {
             return Poll::Ready(());
         }
 
         self.task_waker.register(cx.waker());
 
-        if self.exit_req.load(ORDERING) {
+        if self.exit_req.load(ORDERING_LOAD) {
             Poll::Ready(())
         } else {
             Poll::Pending
@@ -98,7 +98,7 @@ where
                         job.call(false);
                     },
                     _r = inner.as_ref().fuse() => {
-                        if inner.exit_req.load(ORDERING) {
+                        if inner.exit_req.load(ORDERING_LOAD) {
                             break;
                         }
                     }
@@ -118,4 +118,7 @@ where
 }
 
 
-const ORDERING: Ordering = Ordering::Relaxed;
+
+const ORDERING_STORE: Ordering = Ordering::Relaxed; // Release;
+const ORDERING_LOAD: Ordering = Ordering::Relaxed;  // Acquire;
+// const ORDERING_RMW: Ordering = Ordering::Relaxed; // AcqRel; // Read-Modify-Write

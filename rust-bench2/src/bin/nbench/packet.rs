@@ -1,4 +1,5 @@
 use bytes::{Buf, BufMut, BytesMut};
+use rust_bench::util::now_millis;
 use serde_derive::{Serialize, Deserialize};
 use anyhow::{Result, bail};
 
@@ -152,7 +153,7 @@ where
     Ok(())
 }
 
-pub fn encode_data<B>(ptype: PacketType, payload: &[u8], buf: &mut B) -> Result<()>
+pub fn encode_payload<B>(ptype: PacketType, payload: &[u8], buf: &mut B) -> Result<()>
 where
     B: BufMut,
 {
@@ -162,6 +163,52 @@ where
         buf.put_slice(&payload);
     }
     Ok(())
+}
+
+fn encode_ts_dummy<B>(ptype: PacketType, ts: i64, total_len: usize, buf: &mut B) -> Result<()>
+where
+    B: BufMut,
+{
+    const MIN_LEN: usize = 1+4+8;
+    
+    let len = if total_len >= MIN_LEN {
+        total_len - MIN_LEN
+    } else {
+        0
+    };
+
+    buf.put_u8(ptype as u8);
+    buf.put_u32((8+len) as u32);
+    buf.put_i64(ts);
+    // unsafe { buf.advance_mut(len) };
+    buf.put_bytes(0, len);
+    Ok(())
+}
+
+pub fn encode_ts_data<B>(total_len: usize, buf: &mut B) -> Result<()> 
+where
+    B: BufMut,
+{
+    encode_ts_dummy(PacketType::Data, now_millis(), total_len, buf)
+}
+
+pub fn encode_ts_data_last<B>(buf: &mut B) -> Result<()> 
+where
+    B: BufMut,
+{
+    encode_ts_dummy(PacketType::Data, now_millis(), 8, buf)
+}
+
+pub fn decode_ts_dummy<B>(len: usize, buf: &mut B) -> Result<i64>
+where
+    B: Buf,
+{
+    if len < 8 || buf.remaining() < len {
+        bail!("NOT enough remaining for ts, {:?}", (len, buf.remaining()))
+    }
+    let ts = buf.get_i64();
+    buf.advance(len-8);
+    Ok(ts)
 }
 
 

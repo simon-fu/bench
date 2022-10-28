@@ -262,7 +262,7 @@ pub fn xfer_sending(socket: &mut TcpStream, buf2: &mut BufPair, hreq: &Handshake
     let start = Instant::now();
     let duration = Duration::from_secs(hreq.secs);
     while start.elapsed() < duration{
-        packet::encode_data(PacketType::Data, &data, &mut buf2.obuf)?;
+        packet::encode_payload(PacketType::Data, &data, &mut buf2.obuf)?;
         let n = socket.write(&mut buf2.obuf)?;
         buf2.obuf.advance(n);
 
@@ -272,7 +272,7 @@ pub fn xfer_sending(socket: &mut TcpStream, buf2: &mut BufPair, hreq: &Handshake
             info!( "send rate: [{}]", r.to_human());
         }
     }
-    packet::encode_data(PacketType::Data, &[], &mut buf2.obuf)?;
+    packet::encode_payload(PacketType::Data, &[], &mut buf2.obuf)?;
     socket.write_all(&mut buf2.obuf)?;
     buf2.obuf.clear();
     socket.flush()?;

@@ -37,7 +37,9 @@ impl Interval {
 
 
 
-const ORDERING: Ordering = Ordering::Relaxed;
+// const ORDERING_STORE: Ordering = Ordering::Relaxed; // Release;
+const ORDERING_LOAD: Ordering = Ordering::Relaxed;  // Acquire;
+const ORDERING_RMW: Ordering = Ordering::Relaxed; // AcqRel; // Read-Modify-Write
 
 #[derive(Debug, Default)]
 pub struct AtomicTraffic {
@@ -47,16 +49,16 @@ pub struct AtomicTraffic {
 
 impl AtomicTraffic {
     pub fn inc_traffic(&self, bytes: i64) {
-        self.packets.fetch_add(1, ORDERING);
-        self.bytes.fetch_add(bytes, ORDERING);
+        self.packets.fetch_add(1, ORDERING_RMW);
+        self.bytes.fetch_add(bytes, ORDERING_RMW);
     }
 }
 
 impl TrafficOp for AtomicTraffic {
     fn get_traffic(&self) -> Traffic {
         Traffic::new(
-            self.packets.load(ORDERING),
-            self.bytes.load(ORDERING),
+            self.packets.load(ORDERING_LOAD),
+            self.bytes.load(ORDERING_LOAD),
         )
     }
 }

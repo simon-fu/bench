@@ -4,8 +4,8 @@ use std::sync::Arc;
 use anyhow::{Result, Context, bail};
 use bytes::{Buf, BytesMut};
 use futures::FutureExt;
-use rust_bench::util::{async_rt::async_tcp::{AsyncTcpListener2, AsyncTcpStream2, VRuntime}, now_millis};
-use crate::{args::ServerArgs, packet::BufPair};
+use rust_bench::util::{async_rt::async_tcp::{AsyncTcpListener2, AsyncTcpStream2, VRuntime}, now_millis, histogram::{self, LocalHistogram}};
+use crate::{args::ServerArgs, packet::BufPair, impl_async::common::print_latency_percentile};
 
 use super::{super::{packet::{self, PacketType, HandshakeRequest, HandshakeResponse, HandshakeResponseCode}}, transfer::{read_specific_packet, xfer_recving, xfer_sending}, conn_stati::{ACTIVE, TOTAL, DONE, period_stati, GetConnsStati, ConnsStati}};
 
@@ -51,6 +51,7 @@ where
 
     let guard = period_stati::<RT, _>(ctx.clone());
 
+    let hist = histogram::new_latency("latency", "latency help")?;
     // let mut watcher = ctx.stati.conns().watch(); 
 
     loop {
@@ -75,12 +76,13 @@ where
         
                 ctx.stati.conns().add_at(TOTAL, 1);
                 let ctx = ctx.clone();
+                let mut hlocal = hist.local();
                 let mut buf2 = BufPair::default();
                 *cid += 1;
     
                 let cid = *cid;
                 RT::spawn(async move {
-                    let r = service_session(&mut socket, &mut buf2, cid, &ctx).await;
+                    let r = service_session(&mut socket, &mut buf2, cid, &ctx, &mut hlocal).await;
                     match r {
                         Ok(_r) => {
                         },
@@ -100,6 +102,8 @@ where
     }
 
     info!("all clients have terminated"); 
+    print_latency_percentile(&hist)?;
+
     info!(""); 
 
     Ok(())
@@ -119,7 +123,7 @@ impl GetConnsStati for Server {
 }
 
 
-async fn service_session<S>(socket: &mut S, buf2: &mut BufPair, cid: u64, ctx: &Arc<Server>) -> Result<()> 
+async fn service_session<S>(socket: &mut S, buf2: &mut BufPair, cid: u64, ctx: &Arc<Server>, hist: &mut LocalHistogram) -> Result<()> 
 where
     S: AsyncTcpStream2<BytesMut>,
 {
@@ -158,10 +162,12 @@ where
     )?;
     socket.async_write_all_buf(&mut buf2.obuf).await?;
 
+    let delta_ts = timestamp - hreq.timestamp;
+
     ctx.stati.conns().add_at(ACTIVE, 1);
 
     if !hreq.is_reverse {
-        xfer_recving(socket, buf2, ctx.stati.traffic()).await
+        xfer_recving(socket, buf2, ctx.stati.traffic(), delta_ts, hist).await
     } else {
         xfer_sending(socket, buf2, &hreq, ctx.stati.traffic()).await
     }

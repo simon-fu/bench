@@ -57,21 +57,21 @@ pub type I64Values<const N: usize> = GArray<i64, N>;
 
 impl<const N: usize> I64Atomics<N> {
     pub fn get_at(&self, n: usize) -> i64 {
-        self[n].load(ORDERING)
+        self[n].load(ORDERING_LOAD)
     }
 
     pub fn add_at(&self, n: usize, val: i64)  {
-        self[n].fetch_add(val, ORDERING);
+        self[n].fetch_add(val, ORDERING_RMW);
     }
 
     pub fn reset_to(&self, value: i64) {
         for item in &self.0 {
-            item.store(value, ORDERING);
+            item.store(value, ORDERING_STORE);
         }
     }
 
     pub fn snapshot(&self) -> I64Values<N> {
-        GArray(array_init(|i| self[i].load(ORDERING)))
+        GArray(array_init(|i| self[i].load(ORDERING_LOAD)))
     }
 
 
@@ -147,7 +147,7 @@ impl<'a, const N:usize> I64AtomicsRateHuman<'a, N> {
         f.write_fmt(format_args!(
             "{} {}/{:+}/{:+}", 
             self.names[0],
-            self.atomic[0].load(ORDERING).to_human(), 
+            self.atomic[0].load(ORDERING_LOAD).to_human(), 
             self.delta[0].to_human(), 
             rate[0].to_human(),
         ))?;
@@ -156,7 +156,7 @@ impl<'a, const N:usize> I64AtomicsRateHuman<'a, N> {
             f.write_fmt(format_args!(
                 ", {} {}/{:+}/{:+}", 
                 self.names[i],
-                self.atomic[i].load(ORDERING).to_human(), 
+                self.atomic[i].load(ORDERING_LOAD).to_human(), 
                 self.delta[i].to_human(), 
                 rate[i].to_human(),
             ))?;
@@ -249,7 +249,10 @@ impl<const N: usize> CalcRate for I64Values<N> {
     }
 }
 
-const ORDERING: Ordering = Ordering::Relaxed;
+
+const ORDERING_STORE: Ordering = Ordering::Relaxed; // Release;
+const ORDERING_LOAD: Ordering = Ordering::Relaxed;  // Acquire;
+const ORDERING_RMW: Ordering = Ordering::Relaxed; // AcqRel; // Read-Modify-Write
 
 
 
