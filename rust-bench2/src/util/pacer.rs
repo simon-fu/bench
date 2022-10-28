@@ -46,13 +46,18 @@ impl Pacer {
             return Some(Duration::from_millis(std::u64::MAX / 2));
         }
 
-        let expect = 1000 * n * self.rate.denom() / self.rate.numer();
+        //let expect = 1000 * n * self.rate.denom() / self.rate.numer();
+        let expect = self.offset_milli(n);
         let diff = expect as i64 - self.kick_time.elapsed().as_millis() as i64;
         if diff > 0 {
             Some(Duration::from_millis(diff as u64))
         } else {
             None
         }
+    }
+
+    pub fn offset_milli(&self, n: u64) -> u64 {
+        1000 * n * self.rate.denom() / self.rate.numer()
     }
 
     // pub fn get_wait_milli(&self, n : u64) -> i64{

@@ -134,6 +134,7 @@ pub fn run_as_client(args: &ClientArgs) -> Result<()>
         data_len: args.packet_len(),
         secs: args.secs,
         timestamp: now_millis(),
+        pps: args.pps(),
     };
 
     packet::encode_json(PacketType::HandshakeRequest, &hreq, &mut buf2.obuf)?;
@@ -260,7 +261,7 @@ pub fn xfer_sending(socket: &mut TcpStream, buf2: &mut BufPair, hreq: &Handshake
     
     let data = vec![0_u8; hreq.data_len];
     let start = Instant::now();
-    let duration = Duration::from_secs(hreq.secs);
+    let duration = Duration::from_secs(hreq.secs as u64);
     while start.elapsed() < duration{
         packet::encode_payload(PacketType::Data, &data, &mut buf2.obuf)?;
         let n = socket.write(&mut buf2.obuf)?;

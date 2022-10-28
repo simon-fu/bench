@@ -1,5 +1,5 @@
 use bytes::{Buf, BufMut, BytesMut};
-use rust_bench::util::now_millis;
+// use rust_bench::util::now_millis;
 use serde_derive::{Serialize, Deserialize};
 use anyhow::{Result, bail};
 
@@ -18,8 +18,9 @@ pub struct HandshakeRequest {
     pub ver: u8,
     pub is_reverse: bool,
     pub data_len: usize,
-    pub secs: u64,
     pub timestamp: i64,
+    pub secs: u32,
+    pub pps: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -185,18 +186,25 @@ where
     Ok(())
 }
 
-pub fn encode_ts_data<B>(total_len: usize, buf: &mut B) -> Result<()> 
+// pub fn encode_ts_data<B>(total_len: usize, buf: &mut B) -> Result<()> 
+// where
+//     B: BufMut,
+// {
+//     encode_ts_dummy(PacketType::Data, now_millis(), total_len, buf)
+// }
+
+pub fn encode_ts_data2<B>(ts: i64, total_len: usize, buf: &mut B) -> Result<()> 
 where
     B: BufMut,
 {
-    encode_ts_dummy(PacketType::Data, now_millis(), total_len, buf)
+    encode_ts_dummy(PacketType::Data, ts, total_len, buf)
 }
 
-pub fn encode_ts_data_last<B>(buf: &mut B) -> Result<()> 
+pub fn encode_ts_data_last<B>(ts: i64, buf: &mut B) -> Result<()> 
 where
     B: BufMut,
 {
-    encode_ts_dummy(PacketType::Data, now_millis(), 8, buf)
+    encode_ts_dummy(PacketType::Data, ts, 8, buf)
 }
 
 pub fn decode_ts_dummy<B>(len: usize, buf: &mut B) -> Result<i64>

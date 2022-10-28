@@ -54,7 +54,7 @@ where
         shared.stati.conns().add_at(TOTAL, 1);
 
         RT::spawn(async move {
-            let r = run_one::<S>(&shared).await;
+            let r = run_one::<RT, S>(&shared).await;
             if let Err(e) = r {
                 info!("connection error [{}]", e);
             }
@@ -82,8 +82,9 @@ where
 }
 
 
-async fn run_one<S>(shared: &Arc<Shared>) -> Result<()> 
+async fn run_one<RT, S>(shared: &Arc<Shared>) -> Result<()> 
 where
+    RT: VRuntime,
     S: AsyncTcpStream2<BytesMut>,
 {
     debug!("Connecting to [{}]...", shared.args.target);
@@ -100,6 +101,7 @@ where
         data_len: shared.args.packet_len(),
         secs: shared.args.secs,
         timestamp: now_millis(),
+        pps: shared.args.pps(),
     };
 
     packet::encode_json(PacketType::HandshakeRequest, &hreq, &mut buf2.obuf)?;
@@ -137,7 +139,7 @@ where
 
 
     if !shared.args.is_reverse {
-        xfer_sending(&mut socket, &mut buf2, &hreq, shared.stati.traffic()).await?;
+        xfer_sending::<RT, _>(&mut socket, &mut buf2, &hreq, shared.stati.traffic()).await?;
     } else {
         xfer_recving(&mut socket, &mut buf2, shared.stati.traffic(), 0, &mut hist).await?;
     }

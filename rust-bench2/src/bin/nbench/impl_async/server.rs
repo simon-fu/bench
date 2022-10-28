@@ -82,7 +82,7 @@ where
     
                 let cid = *cid;
                 RT::spawn(async move {
-                    let r = service_session(&mut socket, &mut buf2, cid, &ctx, &mut hlocal).await;
+                    let r = service_session::<RT, _>(&mut socket, &mut buf2, cid, &ctx, &mut hlocal).await;
                     match r {
                         Ok(_r) => {
                         },
@@ -123,8 +123,9 @@ impl GetConnsStati for Server {
 }
 
 
-async fn service_session<S>(socket: &mut S, buf2: &mut BufPair, cid: u64, ctx: &Arc<Server>, hist: &mut LocalHistogram) -> Result<()> 
+async fn service_session<RT, S>(socket: &mut S, buf2: &mut BufPair, cid: u64, ctx: &Arc<Server>, hist: &mut LocalHistogram) -> Result<()> 
 where
+    RT: VRuntime,
     S: AsyncTcpStream2<BytesMut>,
 {
 
@@ -169,7 +170,7 @@ where
     if !hreq.is_reverse {
         xfer_recving(socket, buf2, ctx.stati.traffic(), delta_ts, hist).await
     } else {
-        xfer_sending(socket, buf2, &hreq, ctx.stati.traffic()).await
+        xfer_sending::<RT, _>(socket, buf2, &hreq, ctx.stati.traffic()).await
     }
     
 

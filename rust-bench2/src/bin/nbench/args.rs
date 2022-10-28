@@ -34,7 +34,7 @@ pub struct ClientArgs {
     pub is_reverse: bool,
 
     #[clap(short = 't', long = "time", long_help = "time in seconds to transmit for", default_value = "10")]
-    pub secs: u64,
+    pub secs: u32,
 
     #[clap(long = "rt", long_help = "runtime", default_value = "tokio")]
     #[arg(value_enum)]
@@ -43,8 +43,11 @@ pub struct ClientArgs {
     #[clap(long = "conn", long_help = "all connections to setup", default_value = "1")]
     pub conns: usize,
 
-    #[clap(long = "cps", long_help = "setup connections rate", default_value = "1000")]
+    #[clap(long = "cps", long_help = "setup connections rate, connections/second", default_value = "1000")]
     pub cps: usize,
+
+    #[clap(long = "pps", long_help = "sending packets rate, packets/second")]
+    pub pps: Option<u32>,
 }
 
 
@@ -63,6 +66,10 @@ impl ClientArgs {
 
     pub fn packet_len(&self) -> usize {
         self.len.unwrap_or_else(||DEFAULT_PACKET_LEN)
+    }
+
+    pub fn pps(&self) -> u32 {
+        self.pps.unwrap_or_else(||0)
     }
 }
 

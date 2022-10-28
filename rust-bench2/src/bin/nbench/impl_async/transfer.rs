@@ -1,28 +1,47 @@
 use std::time::{Instant, Duration};
 use anyhow::{Result, bail};
 use bytes::{BytesMut, Buf, BufMut};
-use rust_bench::util::{traffic::AtomicTraffic, async_rt::{async_tcp::{AsyncTcpStream2, AsyncReadBuf}}, histogram::LocalHistogram, now_millis};
+use rust_bench::util::{traffic::AtomicTraffic, async_rt::{async_tcp::{AsyncTcpStream2, AsyncReadBuf, VRuntime}}, histogram::LocalHistogram, now_millis, pacer::Pacer};
 use crate::packet::{HandshakeRequest, self, PacketType, Header, BufPair};
 
 
-pub async fn xfer_sending<S>(socket: &mut S, buf2: &mut BufPair, hreq: &HandshakeRequest, traffic: &AtomicTraffic) -> Result<()> 
+pub async fn xfer_sending<RT, S>(socket: &mut S, buf2: &mut BufPair, hreq: &HandshakeRequest, traffic: &AtomicTraffic) -> Result<()> 
 where
     S: AsyncTcpStream2<BytesMut>,
+    RT: VRuntime,
 { 
 
-    // let data = vec![0_u8; hreq.data_len];
+
+    let pacer = Pacer::new(hreq.pps as u64);
+    let mut packets = 0_u64;
+
+    let kick_ts = now_millis();
+    let next_ts = |packets| { 
+        // now_millis()
+        kick_ts + pacer.offset_milli(packets) as i64
+    };
+
     let start = Instant::now();
-    let duration = Duration::from_secs(hreq.secs);
-    while start.elapsed() < duration{
-        // packet::encode_payload(PacketType::Data, &data, &mut buf2.obuf)?;
-        packet::encode_ts_data(hreq.data_len, &mut buf2.obuf)?;
+    let duration = Duration::from_secs(hreq.secs as u64 );
+    
+    while start.elapsed() < duration { 
+        if hreq.pps > 0 {
+            let r = pacer.get_sleep_duration(packets);
+            if let Some(d) = r {
+                RT::async_sleep(d).await;
+            }
+        }
+
+        let ts = next_ts(packets);
+        packet::encode_ts_data2(ts, hreq.data_len, &mut buf2.obuf)?;
         socket.async_write_buf(&mut buf2.obuf).await?;
 
         traffic.inc_traffic(hreq.data_len as i64);
+        packets += 1;
     }
-    // packet::encode_payload(PacketType::Data, &[], &mut buf2.obuf)?;
 
-    packet::encode_ts_data_last(&mut buf2.obuf)?;
+    let ts = next_ts(packets);
+    packet::encode_ts_data_last(ts, &mut buf2.obuf)?;
 
     socket.async_write_all_buf(&mut buf2.obuf).await?;
     socket.async_flush().await?;
@@ -37,6 +56,10 @@ pub async fn xfer_recving<S>(socket: &mut S, buf2: &mut BufPair, traffic: &Atomi
 where
     S: AsyncTcpStream2<BytesMut>,
 { 
+    const WARM_UP_PACKETS: u64 = 0;
+    // let kick_ts = Instant::now();
+    let mut packets = 0_u64;
+    let mut is_observe = false;
 
     loop {
         let header = read_packet(socket, &mut buf2.ibuf).await?;
@@ -53,7 +76,17 @@ where
                     break;
                 }
 
-                {
+                if !is_observe {
+                    // if kick_ts.elapsed() >= Duration::from_millis(100) {
+                    //     is_observe = true;
+                    // }
+
+                    if packets >= WARM_UP_PACKETS {
+                        is_observe = true;
+                    }
+                } 
+
+                if is_observe {
                     let est = peer_ts + delta_ts;
                     let now = now_millis();
                     let latency = if now >= est {
@@ -67,6 +100,7 @@ where
 
 
                 traffic.inc_traffic(len as i64);
+                packets += 1;
             },
             _ => bail!("xfering but got packet type {}", header.ptype),
         } 
