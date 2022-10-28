@@ -99,8 +99,16 @@ impl Percentile for prometheus::proto::Histogram {
             }
         }
 
-        dump_hist(self);
-        bail!("percentile but unknown failure");
+        match self.get_bucket().last() {
+            Some(bucket) => Ok(bucket.get_upper_bound()),
+            None => {
+                dump_hist(self);
+                bail!("percentile but unknown failure")
+            },
+        }
+
+        // dump_hist(self);
+        // bail!("percentile but unknown failure");
     }
 
     fn samples(&self) -> u64 {
