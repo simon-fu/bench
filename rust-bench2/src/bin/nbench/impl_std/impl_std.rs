@@ -135,6 +135,7 @@ pub fn run_as_client(args: &ClientArgs) -> Result<()>
         secs: args.secs,
         timestamp: now_millis(),
         pps: args.pps(),
+        conns: args.all_conns(),
     };
 
     packet::encode_json(PacketType::HandshakeRequest, &hreq, &mut buf2.obuf)?;

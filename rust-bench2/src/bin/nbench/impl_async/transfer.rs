@@ -44,12 +44,13 @@ where
         packets += 1;
     }
 
-    let ts = next_ts(packets);
-    packet::encode_ts_data_last(ts, &mut buf2.obuf)?;
+    // let ts = next_ts(packets);
+    // packet::encode_ts_data_last(ts, &mut buf2.obuf)?;
+    packet::encode_ts_data_last(&mut buf2.obuf)?;
 
     socket.async_write_all_buf(&mut buf2.obuf).await?;
     socket.async_flush().await?;
-    // socket.async_readable().await?;
+    socket.async_readable().await?;
     
 
     Ok(())
@@ -76,9 +77,14 @@ where
                 buf2.ibuf.advance(header.offset);
                 let peer_ts = packet::decode_ts_dummy(header.len, &mut buf2.ibuf)?;
 
-                if header.len == 0 {
+                if peer_ts == 0 {
+                    // last packet
                     break;
                 }
+
+                // if header.len == 0 {
+                //     break;
+                // }
 
                 if !is_observe {
                     // if kick_ts.elapsed() >= Duration::from_millis(100) {

@@ -1,8 +1,9 @@
 
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
 
 use anyhow::{Result, Context, bail};
 use bytes::{Buf, BytesMut};
+use event_listener::Event;
 use futures::FutureExt;
 use rust_bench::util::{async_rt::async_tcp::{AsyncTcpListener2, AsyncTcpStream2, VRuntime}, now_millis, histogram::{self, LocalHistogram}};
 use crate::{args::ServerArgs, packet::BufPair, impl_async::common::print_latency_percentile};
@@ -48,6 +49,7 @@ where
 {    
 
     ctx.stati.conns().reset_to(0);
+    ctx.all_conns.store(0, Ordering::Release);
 
     let guard = period_stati::<RT, _>(ctx.clone());
 
@@ -114,6 +116,8 @@ where
 #[derive(Debug, Default)]
 struct Server {
     stati: ConnsStati,
+    event: Event,
+    all_conns: AtomicU32,
 }
 
 impl GetConnsStati for Server {
@@ -170,9 +174,45 @@ where
     if !hreq.is_reverse {
         xfer_recving(socket, buf2, ctx.stati.traffic(), delta_ts, hist).await
     } else {
+
+        wait_for_kick(socket, buf2, ctx, hreq.conns).await?;
+
         xfer_sending::<RT, _>(socket, buf2, &hreq, ctx.stati.traffic()).await
     }
     
 
 }
 
+async fn wait_for_kick<S>(socket: &mut S, buf2: &mut BufPair, ctx: &Arc<Server>, conns: u32) -> Result<()> 
+where
+    S: AsyncTcpStream2<BytesMut>,
+{
+    let r = ctx.all_conns.compare_exchange(0, conns, Ordering::Acquire, Ordering::Relaxed);
+    let n = match r {
+        Ok(_n) => {
+            info!("reverse mode and plan connections [{}]", conns);
+            conns
+        },
+        Err(n) => { 
+            n
+        },
+    };
+    if ctx.stati.conns().get_at(ACTIVE) == n as i64 {
+        ctx.stati.wait_next_period().await;
+        info!("got all connections [{}], kick sending", n);
+        ctx.event.notify(usize::MAX);
+    } else {
+        futures::select! {
+            _r = ctx.event.listen().fuse() => {}
+            r = socket.async_read_buf(&mut buf2.ibuf).fuse() => {
+                let n = r?;
+                if n == 0 {
+                    bail!("waiting for kick but disconnected")
+                } else {
+                    bail!("waiting for kick but incoming data")
+                }
+            }
+        }
+    }
+    Ok(())
+}

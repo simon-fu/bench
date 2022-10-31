@@ -21,6 +21,7 @@ pub struct HandshakeRequest {
     pub timestamp: i64,
     pub secs: u32,
     pub pps: u32,
+    pub conns: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -200,11 +201,18 @@ where
     encode_ts_dummy(PacketType::Data, ts, total_len, buf)
 }
 
-pub fn encode_ts_data_last<B>(ts: i64, buf: &mut B) -> Result<()> 
+// pub fn encode_ts_data_last<B>(ts: i64, buf: &mut B) -> Result<()> 
+// where
+//     B: BufMut,
+// {
+//     encode_ts_dummy(PacketType::Data, ts, 8, buf)
+// }
+
+pub fn encode_ts_data_last<B>(buf: &mut B) -> Result<()> 
 where
     B: BufMut,
 {
-    encode_ts_dummy(PacketType::Data, ts, 8, buf)
+    encode_ts_dummy(PacketType::Data, 0, 8, buf)
 }
 
 pub fn decode_ts_dummy<B>(len: usize, buf: &mut B) -> Result<i64>

@@ -68,6 +68,11 @@ where
     }
     info!("all connections setup");
 
+    if !shared.args.is_reverse && shared.args.all_conns() != shared.args.conns {
+        info!("press Enter to continue...");
+        let _ = std::io::Read::read(&mut std::io::stdin(), &mut [0u8]).unwrap();
+    }
+
     // kick xfer
     shared.event.notify(usize::MAX);
 
@@ -102,6 +107,7 @@ where
         secs: shared.args.secs,
         timestamp: now_millis(),
         pps: shared.args.pps(),
+        conns: shared.args.all_conns(),
     };
 
     packet::encode_json(PacketType::HandshakeRequest, &hreq, &mut buf2.obuf)?;

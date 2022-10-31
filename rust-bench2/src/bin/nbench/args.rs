@@ -41,13 +41,16 @@ pub struct ClientArgs {
     pub runtime: RuntimeType,
 
     #[clap(long = "conn", long_help = "all connections to setup", default_value = "1")]
-    pub conns: usize,
+    pub conns: u32,
 
     #[clap(long = "cps", long_help = "setup connections rate, connections/second", default_value = "1000")]
     pub cps: usize,
 
     #[clap(long = "pps", long_help = "sending packets rate, packets/second")]
     pub pps: Option<u32>,
+
+    #[clap(long = "all-conn", long_help = "all connections when multi clients")]
+    pub all_conns: Option<u32>,
 }
 
 
@@ -70,6 +73,10 @@ impl ClientArgs {
 
     pub fn pps(&self) -> u32 {
         self.pps.unwrap_or_else(||0)
+    }
+
+    pub fn all_conns(&self) -> u32 {
+        self.all_conns.unwrap_or_else(||self.conns)
     }
 }
 
