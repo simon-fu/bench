@@ -8,7 +8,7 @@ use futures::FutureExt;
 use rust_bench::util::{async_rt::async_tcp::{AsyncTcpListener2, AsyncTcpStream2, VRuntime}, now_millis, histogram::{self, LocalHistogram}};
 use crate::{args::ServerArgs, packet::BufPair, impl_async::common::print_latency_percentile};
 
-use super::{super::{packet::{self, PacketType, HandshakeRequest, HandshakeResponse, HandshakeResponseCode}}, transfer::{read_specific_packet, xfer_recving, xfer_sending}, conn_stati::{ACTIVE, TOTAL, DONE, period_stati, GetConnsStati, ConnsStati}};
+use super::{super::{packet::{self, PacketType, HandshakeRequest, HandshakeResponse, HandshakeResponseCode}}, transfer::{read_specific_packet, xfer_recving, xfer_sending}, conn_stati::{ACTIVE, TOTAL, DONE, period_stati, GetConnsStati, ConnsStati, INACTIVE}};
 
 use tracing::{info, debug};
 
@@ -60,10 +60,13 @@ where
 
         futures::select! {
             _r = ctx.stati.wait_next_period().fuse() => { 
-                let snapshot = ctx.stati.conns().snapshot();
-                if snapshot.get_at(TOTAL) > 0 &&  snapshot.is_equ2(TOTAL, DONE) {
+                if ctx.stati.is_all_stop() {
                     break;
                 }
+
+                // if snapshot.get_at(TOTAL) > 0 &&  snapshot.is_equ2(TOTAL, DONE) {
+                //     break;
+                // }
             }
 
             // _r = watcher.wait_for().fuse() => {
@@ -99,9 +102,8 @@ where
                 
     }
     
-    if let Some(task) = guard.into_task() {
-        task.await;
-    }
+    ctx.stop_event.notify(usize::MAX);
+    ctx.stati.wati_for_conns_done(guard).await;
 
     info!("all clients have terminated"); 
     print_latency_percentile(&hist)?;
@@ -116,7 +118,8 @@ where
 #[derive(Debug, Default)]
 struct Server {
     stati: ConnsStati,
-    event: Event,
+    start_event: Event,
+    stop_event: Event,
     all_conns: AtomicU32,
 }
 
@@ -172,15 +175,18 @@ where
     ctx.stati.conns().add_at(ACTIVE, 1);
 
     if !hreq.is_reverse {
-        xfer_recving(socket, buf2, ctx.stati.traffic(), delta_ts, hist).await
+        xfer_recving(socket, buf2, ctx.stati.traffic(), delta_ts, hist).await?;
     } else {
 
         wait_for_kick(socket, buf2, ctx, hreq.conns).await?;
 
-        xfer_sending::<RT, _>(socket, buf2, &hreq, ctx.stati.traffic()).await
+        xfer_sending::<RT, _>(socket, buf2, &hreq, ctx.stati.traffic()).await?;
     }
-    
 
+    ctx.stati.conns().add_at(INACTIVE, 1);
+    ctx.stop_event.listen().await;
+
+    Ok(())
 }
 
 async fn wait_for_kick<S>(socket: &mut S, buf2: &mut BufPair, ctx: &Arc<Server>, conns: u32) -> Result<()> 
@@ -200,10 +206,10 @@ where
     if ctx.stati.conns().get_at(ACTIVE) == n as i64 {
         ctx.stati.wait_next_period().await;
         info!("got all connections [{}], kick sending", n);
-        ctx.event.notify(usize::MAX);
+        ctx.start_event.notify(usize::MAX);
     } else {
         futures::select! {
-            _r = ctx.event.listen().fuse() => {}
+            _r = ctx.start_event.listen().fuse() => {}
             r = socket.async_read_buf(&mut buf2.ibuf).fuse() => {
                 let n = r?;
                 if n == 0 {

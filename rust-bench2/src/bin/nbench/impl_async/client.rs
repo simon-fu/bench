@@ -7,7 +7,7 @@ use event_listener::Event;
 use futures::FutureExt;
 use rust_bench::util::{async_rt::async_tcp::{AsyncTcpStream2, VRuntime}, now_millis, pacer::Pacer, histogram::{Histogram, self}};
 use tracing::{info, debug};
-use crate::{args::ClientArgs, packet::{HandshakeRequest, self, PacketType, HandshakeResponse, BufPair}, impl_async::common::print_latency_percentile};
+use crate::{args::ClientArgs, packet::{HandshakeRequest, self, PacketType, HandshakeResponse, BufPair}, impl_async::{common::print_latency_percentile, conn_stati::INACTIVE}};
 use super::transfer::{read_specific_packet, xfer_sending, xfer_recving};
 use super::conn_stati::{ACTIVE, TOTAL, DONE, period_stati, GetConnsStati, ConnsStati};
 
@@ -28,7 +28,8 @@ where
             None => None,
         },
         args,
-        event: Default::default(),
+        start_event: Default::default(),
+        stop_event: Default::default(),
         stati: Default::default(),
         hist: histogram::new_latency("client_hist", "client hist help")?,
     });
@@ -74,13 +75,17 @@ where
     }
 
     // kick xfer
-    shared.event.notify(usize::MAX);
+    shared.start_event.notify(usize::MAX);
+
+    shared.stati.wati_for_conns_inactive().await?;
+
+    shared.stop_event.notify(usize::MAX);
 
     shared.stati.wati_for_conns_done(guard).await;
 
     print_latency_percentile(&shared.hist)?;
 
-    info!( "Done");
+    info!("done.");
 
     Ok(())
     
@@ -126,7 +131,7 @@ where
 
 
     if !shared.args.is_reverse {
-        let listener = shared.event.listen();
+        let listener = shared.start_event.listen();
 
         futures::select! {
 
@@ -150,7 +155,11 @@ where
         xfer_recving(&mut socket, &mut buf2, shared.stati.traffic(), 0, &mut hist).await?;
     }
 
+    shared.stati.conns().add_at(INACTIVE, 1);
+    shared.stop_event.listen().await;
+
     socket.async_shutdown().await?;
+
     Result::<()>::Ok(())
 }
 
@@ -166,7 +175,8 @@ impl GetConnsStati for Shared {
 struct Shared {
     args: ClientArgs,
     bind_addr: Option<SocketAddr>,
-    event: Event,
+    start_event: Event,
+    stop_event: Event,
     stati: ConnsStati,
     hist: Histogram,
 }

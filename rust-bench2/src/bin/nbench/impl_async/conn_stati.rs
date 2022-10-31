@@ -1,3 +1,4 @@
+use anyhow::{bail, Result};
 use event_listener::Event;
 use rust_bench::util::{atomic_count::{I64Atomics, I64Values, ToRateHuman}, traffic::{AtomicTraffic, Traffic, TrafficRate, TrafficOp, ToHuman}, period_rate::{GetRateState, CalcRate, PeriodRate}, async_rt::async_tcp::VRuntime, period_call::{period_call, PeriodCallGuard}};
 use tracing::info;
@@ -72,6 +73,18 @@ impl ConnsStati {
         self.event.listen().await
     }
 
+    pub fn is_all_stop(&self) -> bool {
+        let snapshot = self.conns.snapshot();
+        let total = snapshot.get_at(TOTAL);
+        if total > 0 {
+            let inactives = snapshot.get_at(INACTIVE);
+            let dones = snapshot.get_at(DONE);
+            (inactives + dones) == total
+        } else {
+            false
+        }
+    }
+
     pub async fn wait_for_conns_setup(&self) -> bool {
         loop {
             self.wait_next_period().await; 
@@ -87,6 +100,23 @@ impl ConnsStati {
                 }
             }
         }
+    }
+
+    pub async fn wati_for_conns_inactive(&self) -> Result<()> {
+        loop { 
+            self.wait_next_period().await; 
+            let snapshot = self.conns().snapshot();
+    
+            if snapshot.is_equ2(TOTAL, INACTIVE) {
+                break;
+            }
+
+            if snapshot.get_at(DONE) > 0 {
+                bail!("waiting for connections inactive but some connections broken")
+            }
+        }
+    
+        Ok(())
     }
 
     pub async fn wati_for_conns_done<RT>(&self, guard: PeriodCallGuard<RT>) 
@@ -120,11 +150,12 @@ impl GetRateState for ConnsStati {
 }
 
 
-pub const NAMES: [&str; 3] = ["total", "active", "done",];
+pub const NAMES: [&str; CNUM] = ["total", "active", "inactive", "done",];
 pub const TOTAL: usize = 0;
 pub const ACTIVE: usize = 1;
-pub const DONE: usize = 2;
-const CNUM: usize = 3;
+pub const INACTIVE: usize = 2;
+pub const DONE: usize = 3;
+const CNUM: usize = DONE+1;
 
 
 pub struct RateState {
