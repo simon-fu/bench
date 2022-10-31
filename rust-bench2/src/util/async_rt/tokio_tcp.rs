@@ -111,7 +111,7 @@ async fn tcp_bind_and_connect<A>(bind_addr: Option<SocketAddr>, target_addr: A) 
 where
     A: ToSocketAddrs
 {
-    match bind_addr { 
+    let r = match bind_addr { 
         None => TcpStream::connect(target_addr).await,
         Some(bind_addr) => {
             let mut connect_result = Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Not found target addr"));
@@ -125,11 +125,12 @@ where
                     break;
                 }
             }
-            let stream = connect_result?;
-            // stream.set_nodelay(false)?;
-            Ok(stream)
+            connect_result
         },
-    }
+    };
+    let stream = r?;
+    stream.set_nodelay(true)?;
+    Ok(stream)
 }
 
 impl GetLocalAddr for TcpStream {
