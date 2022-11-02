@@ -64,17 +64,17 @@ enum SessionEvent {
         ts: i64,
     },
     ConnectFail {
-        ts: i64,
+        _ts: i64,
     },
     ConnectBroken {
-        ts: i64,
+        _ts: i64,
     },
     Xfer{
         ts: i64,
         data: Transfer,
     },
     Finish{
-        ts: i64,
+        _ts: i64,
     }
 }
 
@@ -108,7 +108,7 @@ struct MasterState{
     finish_session_count : u32,
     conn_speed_state : Speed,
     max_conn_speed : i64,
-    start_time : i64,
+    _start_time : i64,
     finished : bool,
     conn_updated : bool,
 
@@ -135,7 +135,7 @@ impl  MasterState {
             finish_session_count : 0,
             conn_speed_state : Speed::default(),
             max_conn_speed : 0,
-            start_time : now_ms,
+            _start_time : now_ms,
             finished : false,
             conn_updated : false,
 
@@ -487,7 +487,7 @@ async fn session_connect(session : &mut Session) -> Result<()>{
         }
         Err(e) => {
             debug!("connect fail with [{}]", e);
-            let _ = session.tx0.send(SessionEvent::ConnectFail { ts: xrs::time::now_millis() }).await;
+            let _ = session.tx0.send(SessionEvent::ConnectFail { _ts: xrs::time::now_millis() }).await;
             return Err(e);
         } 
     }
@@ -527,7 +527,7 @@ async fn session_entry(mut session : Session, mut watch_rx0 : watch::Receiver<Hu
         if matches!(watch_state, HubEvent::KickXfer) {
             let r = session_xfer(&mut session, &mut watch_rx0, &mut watch_state).await;
             if r.is_err() {
-                let _ = session.tx0.send(SessionEvent::ConnectBroken { ts: xrs::time::now_millis() }).await;
+                let _ = session.tx0.send(SessionEvent::ConnectBroken { _ts: xrs::time::now_millis() }).await;
                 break;
             }
         }
@@ -541,7 +541,7 @@ async fn session_entry(mut session : Session, mut watch_rx0 : watch::Receiver<Hu
     }
 
     // finally 
-    let _ = session.tx0.send(SessionEvent::Finish { ts: xrs::time::now_millis()}).await;
+    let _ = session.tx0.send(SessionEvent::Finish { _ts: xrs::time::now_millis()}).await;
 }
 
 
